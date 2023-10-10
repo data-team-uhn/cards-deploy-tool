@@ -58,6 +58,8 @@ except ImportError:
   print()
   sys.exit(-1)
 
+from dockerImageUtils import copyFileFromDockerImage
+
 from CardsDockerTagProperty import CARDS_DOCKER_TAG
 from CloudIAMdemoKeystoreSha256Property import CLOUD_IAM_DEMO_KEYSTORE_SHA256
 from ServerMemorySplitConfig import MEMORY_SPLIT_CARDS_JAVA, MEMORY_SPLIT_MONGO_DATA_STORAGE
@@ -660,7 +662,7 @@ yaml_obj['services']['cardsinitial']['networks']['internalnetwork']['aliases'] =
 #Create the ./SLING directory and copy the logback.xml file into it
 try:
   os.mkdir("SLING")
-  shutil.copyfile("../distribution/logback.xml", "SLING/logback.xml")
+  copyFileFromDockerImage(yaml_obj['services']['cardsinitial']['image'], "/opt/cards/.cards-data/logback.xml", "SLING/logback.xml")
 except FileExistsError:
   print("Warning: SLING directory exists - will leave unmodified.")
 
@@ -866,7 +868,7 @@ if ENABLE_NCR:
   yaml_obj['services']['proxy']['depends_on'].append('neuralcr')
 
 #Add the appropriate CARDS logo (eg. DATAPRO, HERACLES, etc...) for the selected project
-shutil.copyfile(getCardsProjectLogoPath(args.cards_project), "./proxy/proxyerror/logo.png")
+copyFileFromDockerImage(yaml_obj['services']['cardsinitial']['image'], "/metadata/logo.png", "./proxy/proxyerror/logo.png")
 
 #Specify the Application Name of the CARDS project to the proxy
 yaml_obj['services']['proxy']['environment'] = []
