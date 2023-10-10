@@ -66,11 +66,10 @@ class fileobjFromIterator:
 def copyFileFromDockerImage(imageName, srcPath, dstPath):
   docker_client = docker.from_env()
   stopped_cards_container = docker_client.containers.create(imageName)
-  with open(dstPath, 'wb') as f_save:
-    bits, stat = stopped_cards_container.get_archive(srcPath)
-    tar_stream = fileobjFromIterator(bits)
-    tf = tarfile.open(fileobj=tar_stream, mode='r|')
-    for contained_file in tf:
-      with open(dstPath, 'wb') as f_save:
-        shutil.copyfileobj(tf.extractfile(contained_file), f_save)
+  bits, stat = stopped_cards_container.get_archive(srcPath)
+  tar_stream = fileobjFromIterator(bits)
+  tf = tarfile.open(fileobj=tar_stream, mode='r|')
+  for contained_file in tf:
+    with open(dstPath, 'wb') as f_save:
+      shutil.copyfileobj(tf.extractfile(contained_file), f_save)
   stopped_cards_container.remove()
