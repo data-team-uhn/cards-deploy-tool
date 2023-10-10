@@ -18,6 +18,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
+import json
 import docker
 import shutil
 import tarfile
@@ -73,3 +74,14 @@ def copyFileFromDockerImage(imageName, srcPath, dstPath):
     with open(dstPath, 'wb') as f_save:
       shutil.copyfileobj(tf.extractfile(contained_file), f_save)
   stopped_cards_container.remove()
+
+def getJSONMapFromDockerImage(imageName, filePath):
+  docker_client = docker.from_env()
+  stopped_cards_container = docker_client.containers.create(imageName)
+  bits, stat = stopped_cards_container.get_archive(filePath)
+  tar_stream = fileobjFromIterator(bits)
+  tf = tarfile.open(fileobj=tar_stream, mode='r|')
+  for contained_file in tf:
+    json_map = json.load(tf.extractfile(contained_file))
+  stopped_cards_container.remove()
+  return json_map
