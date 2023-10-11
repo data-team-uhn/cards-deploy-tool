@@ -58,9 +58,8 @@ except ImportError:
   print()
   sys.exit(-1)
 
-from dockerImageUtils import copyFileFromDockerImage
+from dockerImageUtils import copyFileFromDockerImage, getJSONMapFromDockerImage
 
-from CardsDockerTagProperty import CARDS_DOCKER_TAG
 from CloudIAMdemoKeystoreSha256Property import CLOUD_IAM_DEMO_KEYSTORE_SHA256
 from ServerMemorySplitConfig import MEMORY_SPLIT_CARDS_JAVA, MEMORY_SPLIT_MONGO_DATA_STORAGE
 
@@ -68,6 +67,7 @@ ADMINER_DOCKER_RELEASE_TAG = "4.8.1"
 MINIO_DOCKER_RELEASE_TAG = "RELEASE.2022-09-17T00-09-45Z"
 
 argparser = argparse.ArgumentParser()
+argparser.add_argument('--cards_docker_image', help='The CARDS Docker image to deploy (eg. ghcr.io/data-team-uhn/cards)', required=True)
 argparser.add_argument('--mongo_singular', help='Use a single MongoDB Docker container for data storage', action='store_true')
 argparser.add_argument('--mongo_cluster', help='Use a cluster of MongoDB shards and replicas for data storage', action='store_true')
 argparser.add_argument('--percona_singular', help='Use a single Docker container of Percona Server for MongoDB for data storage', action='store_true')
@@ -82,7 +82,6 @@ argparser.add_argument('--shards', help='Number of MongoDB shards', default=1, t
 argparser.add_argument('--replicas', help='Number of MongoDB replicas per shard (must be an odd number)', default=3, type=int)
 argparser.add_argument('--config_replicas', help='Number of MongoDB cluster configuration servers (must be an odd number)', default=3, type=int)
 argparser.add_argument('--custom_env_file', help='Enable a custom file with environment variables')
-argparser.add_argument('--cards_project', help='The CARDS project to deploy (eg. cards4proms, cards4lfs, etc...')
 argparser.add_argument('--demo', help='Enable the Demo Banner, Upgrade Marker Flag, and Demo Forms', action='store_true')
 argparser.add_argument('--demo_banner', help='Enable only the Demo Banner', action='store_true')
 argparser.add_argument('--dev_docker_image', help='Indicate that the CARDS Docker image being used was built for development, not production.', action='store_true')
@@ -297,6 +296,23 @@ def generateSelfSignedCert():
   pem_key = crypto.dump_privatekey(crypto.FILETYPE_PEM, k).decode('utf-8')
   pem_cert = crypto.dump_certificate(crypto.FILETYPE_PEM, cert).decode('utf-8')
   return pem_key, pem_cert
+
+def getEnvironmentVariablesMap(docker_image_name):
+  env_map = getJSONMapFromDockerImage(docker_image_name, "/external_project/docker_compose_env.json")
+  if env_map == None:
+    return {}
+  if type(env_map) != dict:
+    raise Exception("Invalid environment variables map in {}".format(docker_image_name))
+  env_lists = {}
+  for container_name in env_map:
+    env_lists[container_name] = []
+    if type(env_map[container_name]) != dict:
+      raise Exception("Invalid environment variables map in {}".format(docker_image_name))
+    for key in env_map[container_name]:
+      if type(env_map[container_name][key]) != str:
+        raise Exception("Invalid environment variables map in {}".format(docker_image_name))
+      env_lists[container_name].append("{}={}".format(key, env_map[container_name][key]))
+  return env_lists
 
 def getPathToProjectResourcesDirectory(project_name):
   CARDS4_PREFIX = "cards4"
@@ -607,7 +623,7 @@ if args.percona_singular:
 #Configure the initial CARDS container
 print("Configuring service: cardsinitial")
 yaml_obj['services']['cardsinitial'] = {}
-yaml_obj['services']['cardsinitial']['image'] = "cards/cards:{}".format(CARDS_DOCKER_TAG)
+yaml_obj['services']['cardsinitial']['image'] = args.cards_docker_image
 
 yaml_obj['services']['cardsinitial']['networks'] = {}
 yaml_obj['services']['cardsinitial']['networks']['internalnetwork'] = {}
@@ -668,9 +684,6 @@ if args.sling_admin_port:
 
 if args.debug:
   newListIfEmpty(yaml_obj, 'services', 'cardsinitial', 'ports').append("127.0.0.1:5005:5005")
-
-if args.cards_project:
-  yaml_obj['services']['cardsinitial']['environment'].append("CARDS_PROJECT={}".format(args.cards_project))
 
 if args.composum:
   yaml_obj['services']['cardsinitial']['environment'].append("DEV=true")
@@ -826,7 +839,6 @@ copyFileFromDockerImage(yaml_obj['services']['cardsinitial']['image'], "/metadat
 
 #Specify the Application Name of the CARDS project to the proxy
 yaml_obj['services']['proxy']['environment'] = []
-yaml_obj['services']['proxy']['environment'].append("CARDS_APP_NAME={}".format(getCardsApplicationName(args.cards_project)))
 yaml_obj['services']['proxy']['environment'].append("WEB_PORT_USER_ROOT_REDIRECT={}".format(args.web_port_user_root_redirect))
 
 if SSL_PROXY:
@@ -943,12 +955,6 @@ if args.mssql:
   yaml_obj['services']['cardsinitial']['environment'].append('CLARITY_SQL_PASSWORD=testPassword_')
   yaml_obj['services']['cardsinitial']['environment'].append('CLARITY_SQL_ENCRYPT=false')
   yaml_obj['services']['cardsinitial']['environment'].append('CLARITY_SQL_SCHEMA=path')
-  if args.cards_project == 'cards4prems':
-    yaml_obj['services']['cardsinitial']['environment'].append('CLARITY_SQL_TABLE=PatientActivity_data_for_PtExpSurveyApp')
-    yaml_obj['services']['cardsinitial']['environment'].append('CLARITY_EVENT_TIME_COLUMN=HOSP_DISCHARGE_DTTM')
-  elif args.cards_project == 'cards4proms':
-    yaml_obj['services']['cardsinitial']['environment'].append('CLARITY_SQL_TABLE=PatientVisitActivity_for_DATA-PRO')
-    yaml_obj['services']['cardsinitial']['environment'].append('CLARITY_EVENT_TIME_COLUMN=ENCOUNTER_DATE')
   if args.expose_mssql:
     yaml_obj['services']['mssql']['ports'] = ['127.0.0.1:{}:1433'.format(args.expose_mssql)]
 
@@ -982,6 +988,14 @@ for service_name in yaml_obj['services']:
   # Automatic restart policy
   if service_name not in ["initializer"]:
     yaml_obj['services'][service_name]['restart'] = "unless-stopped"
+
+# Add environment variable configurations specified by the CARDS Docker image
+cards_specified_env_conf = getEnvironmentVariablesMap(yaml_obj['services']['cardsinitial']['image'])
+for container in cards_specified_env_conf:
+  if 'environment' not in yaml_obj['services'][container]:
+    yaml_obj['services'][container]['environment'] = []
+  for env_entry in cards_specified_env_conf[container]:
+    yaml_obj['services'][container]['environment'].append(env_entry)
 
 #Save it
 with open(OUTPUT_FILENAME, 'w') as f_out:
