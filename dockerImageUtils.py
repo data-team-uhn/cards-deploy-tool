@@ -73,7 +73,7 @@ def copyFileFromDockerImage(imageName, srcPath, dstPath):
   for contained_file in tf:
     with open(dstPath, 'wb') as f_save:
       shutil.copyfileobj(tf.extractfile(contained_file), f_save)
-  stopped_cards_container.remove()
+  stopped_cards_container.remove(v=True)
 
 def getJSONMapFromDockerImage(imageName, filePath):
   docker_client = docker.from_env()
@@ -81,11 +81,11 @@ def getJSONMapFromDockerImage(imageName, filePath):
   try:
     bits, stat = stopped_cards_container.get_archive(filePath)
   except docker.errors.NotFound:
-    stopped_cards_container.remove()
+    stopped_cards_container.remove(v=True)
     return None
   tar_stream = fileobjFromIterator(bits)
   tf = tarfile.open(fileobj=tar_stream, mode='r|')
   for contained_file in tf:
     json_map = json.load(tf.extractfile(contained_file))
-  stopped_cards_container.remove()
+  stopped_cards_container.remove(v=True)
   return json_map
