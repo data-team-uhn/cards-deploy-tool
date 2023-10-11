@@ -31,12 +31,13 @@ try:
   import argparse
   import zoneinfo
   from OpenSSL import crypto, SSL
+  from dockerImageUtils import copyFileFromDockerImage, getJSONMapFromDockerImage
 except ImportError:
   print("Error: Missing dependencies!")
   print()
   print("On Debian/Ubuntu, these missing dependencies can be installed with:")
   print()
-  print("\tapt install python3-yaml python3-psutil python3-tzlocal python3-openssl")
+  print("\tapt install python3-yaml python3-psutil python3-tzlocal python3-openssl python3-docker")
   print()
   print("On any other system, these missing dependencies can be installed with:")
   print()
@@ -57,8 +58,6 @@ except ImportError:
   print("\tdeactivate")
   print()
   sys.exit(-1)
-
-from dockerImageUtils import copyFileFromDockerImage, getJSONMapFromDockerImage
 
 from CloudIAMdemoKeystoreSha256Property import CLOUD_IAM_DEMO_KEYSTORE_SHA256
 from ServerMemorySplitConfig import MEMORY_SPLIT_CARDS_JAVA, MEMORY_SPLIT_MONGO_DATA_STORAGE
