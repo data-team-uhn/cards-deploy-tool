@@ -297,21 +297,56 @@ def generateSelfSignedCert():
   pem_cert = crypto.dump_certificate(crypto.FILETYPE_PEM, cert).decode('utf-8')
   return pem_key, pem_cert
 
+def evalCondition(condition):
+  EXPRESSION_INPUTS = {}
+  EXPRESSION_INPUTS['args.mssql'] = args.mssql
+  if type(condition) != str:
+    raise Exception("Invalid conditions specified")
+  if condition not in EXPRESSION_INPUTS:
+    return False
+  return EXPRESSION_INPUTS[condition]
+
+def evalConditionsProduct(conditions):
+  if type(conditions) != list:
+    raise Exception("Invalid conditions specified")
+  for condition in conditions:
+    if evalCondition(condition) == False:
+      return False
+  return True
+
+def evalConditionsSOP(conditions):
+  if conditions == None:
+    return True
+  if type(conditions) != list:
+    raise Exception("Invalid conditions specified")
+  # Conditions are listed in sum-of-products form
+  for condition in conditions:
+    if type(condition) != list:
+      raise Exception("Invalid conditions specified")
+    if evalConditionsProduct(condition) == True:
+      return True
+  return False
+
 def getEnvironmentVariablesMap(docker_image_name):
   env_map = getJSONMapFromDockerImage(docker_image_name, "/external_project/docker_compose_env.json")
   if env_map == None:
     return {}
+
   if type(env_map) != dict:
     raise Exception("Invalid environment variables map in {}".format(docker_image_name))
+
   env_lists = {}
   for container_name in env_map:
     env_lists[container_name] = []
-    if type(env_map[container_name]) != dict:
+
+    if type(env_map[container_name]) != list:
       raise Exception("Invalid environment variables map in {}".format(docker_image_name))
-    for key in env_map[container_name]:
-      if type(env_map[container_name][key]) != str:
-        raise Exception("Invalid environment variables map in {}".format(docker_image_name))
-      env_lists[container_name].append("{}={}".format(key, env_map[container_name][key]))
+
+    for evar in env_map[container_name]:
+      if evalConditionsSOP(evar['conditions']):
+        k = evar['name']
+        v = evar['value']
+        env_lists[container_name].append("{}={}".format(k, v))
   return env_lists
 
 def getPathToProjectResourcesDirectory(project_name):
@@ -994,6 +1029,7 @@ cards_specified_env_conf = getEnvironmentVariablesMap(yaml_obj['services']['card
 for container in cards_specified_env_conf:
   if 'environment' not in yaml_obj['services'][container]:
     yaml_obj['services'][container]['environment'] = []
+
   for env_entry in cards_specified_env_conf[container]:
     yaml_obj['services'][container]['environment'].append(env_entry)
 
