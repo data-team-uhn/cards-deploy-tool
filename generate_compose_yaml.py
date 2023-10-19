@@ -348,60 +348,6 @@ def getEnvironmentVariablesMap(docker_image_name):
         env_lists[container_name].append("{}={}".format(k, v))
   return env_lists
 
-def getPathToProjectResourcesDirectory(project_name):
-  CARDS4_PREFIX = "cards4"
-  resourcesPathMap = {}
-
-  # If an entry for this project_name exists in resourcesPathMap use it instead of anything else
-  if project_name in resourcesPathMap:
-    return resourcesPathMap[project_name]
-
-  if not project_name.startswith(CARDS4_PREFIX):
-    return None
-
-  project_id = project_name[len(CARDS4_PREFIX):]
-  return "../{}-resources/".format(project_id)
-
-def getPathToConfDirectory(project_name):
-  project_resources_dir = getPathToProjectResourcesDirectory(project_name)
-  if project_resources_dir is not None:
-    return os.path.join(project_resources_dir, "clinical-data/src/main/resources/SLING-INF/content/libs/cards/conf/")
-
-  return None
-
-def getApplicationNameByResourcesDirectory(project_name):
-  path_to_appname_json = os.path.join(getPathToConfDirectory(project_name), "AppName.json")
-  if not os.path.exists(path_to_appname_json):
-    print("Warning: {} does not exist.".format(path_to_appname_json))
-    return None
-
-  with open(path_to_appname_json, 'r') as f_json:
-    try:
-      appname_config = json.load(f_json)
-    except json.decoder.JSONDecodeError:
-      print("Warning: {} contains invalid JSON.".format(appname_config))
-      return None
-
-  if "AppName" not in appname_config:
-    print("Warning: 'AppName' was not specified in {}.".format(appname_config))
-    return None
-
-  if type(appname_config['AppName']) != str:
-    print("Warning: 'AppName' in {} is of wrong data-type.".format(path_to_appname_json))
-    return None
-
-  return appname_config['AppName']
-
-def getCardsApplicationName(project_name):
-  if project_name is not None:
-    # Try to see if a {project_id}-resources directory exists that can be used for obtaining the logo
-    projectAppName = getApplicationNameByResourcesDirectory(project_name)
-    if projectAppName is not None:
-      return projectAppName
-
-  # If all else fails, use the generic CARDS name
-  return "CARDS"
-
 def getWiredTigerCacheSizeGB(mongo_node_count=1):
   total_system_memory_bytes = psutil.virtual_memory().total
   total_system_memory_gb = total_system_memory_bytes / (1024 * 1024 * 1024)
