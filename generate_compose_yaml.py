@@ -222,6 +222,8 @@ SSL_PROXY = args.ssl_proxy
 MISSING_ARG_PROMPTS = {}
 MISSING_ARG_PROMPTS['server_address'] = "Enter the public-facing server address for this deployment (eg. localhost:8080): "
 
+
+### Basic utility functions
 def sha256FileHash(filepath):
   hasher = hashlib.sha256()
   with open(filepath, 'rb') as f:
@@ -248,6 +250,56 @@ def getArgValueOrPrompt(arg_name):
       getArgValueOrPrompt.kv_map[arg_name] = val
       return val
 
+def newListIfEmpty(yaml_object, *keys):
+  # Descend down the yaml_object through the keys
+  list_parent_object = yaml_object
+  for key in keys[0:-1]:
+    list_parent_object = list_parent_object[key]
+  list_name = keys[-1]
+  if list_name in list_parent_object.keys():
+    if type(list_parent_object[list_name]) is list:
+      return list_parent_object[list_name]
+  list_parent_object[list_name] = []
+  return list_parent_object[list_name]
+
+def getDockerHostIP(subnet):
+  network_address = subnet.split('/')[0]
+  network_address_octets = network_address.split('.')
+  network_address_octets[-1] = '1'
+  return '.'.join(network_address_octets)
+
+def evalCondition(condition):
+  EXPRESSION_INPUTS = {}
+  EXPRESSION_INPUTS['args.mssql'] = args.mssql
+  if type(condition) != str:
+    raise Exception("Invalid conditions specified")
+  if condition not in EXPRESSION_INPUTS:
+    return False
+  return EXPRESSION_INPUTS[condition]
+
+def evalConditionsProduct(conditions):
+  if type(conditions) != list:
+    raise Exception("Invalid conditions specified")
+  for condition in conditions:
+    if evalCondition(condition) == False:
+      return False
+  return True
+
+def evalConditionsSOP(conditions):
+  if conditions == None:
+    return True
+  if type(conditions) != list:
+    raise Exception("Invalid conditions specified")
+  # Conditions are listed in sum-of-products form
+  for condition in conditions:
+    if type(condition) != list:
+      raise Exception("Invalid conditions specified")
+    if evalConditionsProduct(condition) == True:
+      return True
+  return False
+
+
+### Functions for host specific configuration
 def getTimezoneName():
   if args.timezone:
     return args.timezone
@@ -257,6 +309,88 @@ def getTimezoneName():
       return hosts_localzone.key
     else:
       return hosts_localzone.zone
+
+def getWiredTigerCacheSizeGB(mongo_node_count=1):
+  total_system_memory_bytes = psutil.virtual_memory().total
+  total_system_memory_gb = total_system_memory_bytes / (1024 * 1024 * 1024)
+
+  # Total memory allocated for MongoDB - be it a single MongoDB container of a cluster of shards and replicas:
+  total_mongo_memory_gb = MEMORY_SPLIT_MONGO_DATA_STORAGE * total_system_memory_gb
+
+  # What should the WIRED_TIGER_CACHE_SIZE_GB value be for the MongoDB node in question?
+  wired_tiger_cache_size_gb = total_mongo_memory_gb / mongo_node_count
+
+  # Floor to 2 decimal places
+  wired_tiger_cache_size_gb = math.floor(100 * wired_tiger_cache_size_gb) / 100.0
+
+  # The value of WiredTigerCacheSizeGB must range between 0.25GB and 10000GB as per MongoDB documentation
+  if (wired_tiger_cache_size_gb < 0.25) or (wired_tiger_cache_size_gb > 10000):
+    raise Exception("WiredTigerCacheSizeGB cannot be less than 0.25 or greater than 10000")
+
+  return wired_tiger_cache_size_gb
+
+def getCardsJavaMemoryLimitMB():
+  total_system_memory_bytes = psutil.virtual_memory().total
+  total_system_memory_mb = total_system_memory_bytes / (1024 * 1024)
+
+  cards_java_memory_limit_mb = MEMORY_SPLIT_CARDS_JAVA * total_system_memory_mb
+
+  # Floor down to the nearest integer MB
+  return math.floor(cards_java_memory_limit_mb)
+
+
+### Functions for local file generation
+def generateSmtpsProxyConfigFile(docker_host_ip):
+  with open("smtps_localhost_proxy/nginx.conf.template", 'r') as f:
+    nginx_template = f.read()
+  nginx_config = nginx_template.replace("${DOCKER_HOST_IP}", docker_host_ip)
+  with open("smtps_localhost_proxy/nginx.conf", 'w') as f:
+    f.write(nginx_config)
+
+def generateSelfSignedCert():
+  k = crypto.PKey()
+  k.generate_key(crypto.TYPE_RSA, 4096)
+  cert = crypto.X509()
+  cert.get_subject().C = "NT"
+  cert.get_subject().ST = "stateOrProvinceName"
+  cert.get_subject().L = "localityName"
+  cert.get_subject().O = "organizationName"
+  cert.get_subject().OU = "organizationUnitName"
+  cert.get_subject().CN = "commonName"
+  cert.get_subject().emailAddress = "emailAddress"
+  cert.set_serial_number(0)
+  cert.gmtime_adj_notBefore(0)
+  cert.gmtime_adj_notAfter(100*365*24*60*60)
+  cert.set_issuer(cert.get_subject())
+  cert.set_pubkey(k)
+  cert.sign(k, 'sha256')
+  pem_key = crypto.dump_privatekey(crypto.FILETYPE_PEM, k).decode('utf-8')
+  pem_cert = crypto.dump_certificate(crypto.FILETYPE_PEM, cert).decode('utf-8')
+  return pem_key, pem_cert
+
+
+### Functions for accessing Docker images
+def getEnvironmentVariablesMap(docker_image_name):
+  env_map = getJSONMapFromDockerImage(docker_image_name, "/external_project/docker_compose_env.json")
+  if env_map == None:
+    return {}
+
+  if type(env_map) != dict:
+    raise Exception("Invalid environment variables map in {}".format(docker_image_name))
+
+  env_lists = {}
+  for container_name in env_map:
+    env_lists[container_name] = []
+
+    if type(env_map[container_name]) != list:
+      raise Exception("Invalid environment variables map in {}".format(docker_image_name))
+
+    for evar in env_map[container_name]:
+      if evalConditionsSOP(evar['conditions']):
+        k = evar['name']
+        v = evar['value']
+        env_lists[container_name].append("{}={}".format(k, v))
+  return env_lists
 
 #Validate before doing anything else
 
@@ -353,132 +487,6 @@ if (args.data_db_mount is not None) and args.percona_singular:
   if data_db_mount_stat.st_uid != 1001:
     print("ERROR: The file specified by --percona_singular must have UID=1001")
     sys.exit(-1)
-
-def getDockerHostIP(subnet):
-  network_address = subnet.split('/')[0]
-  network_address_octets = network_address.split('.')
-  network_address_octets[-1] = '1'
-  return '.'.join(network_address_octets)
-
-def generateSmtpsProxyConfigFile(docker_host_ip):
-  with open("smtps_localhost_proxy/nginx.conf.template", 'r') as f:
-    nginx_template = f.read()
-  nginx_config = nginx_template.replace("${DOCKER_HOST_IP}", docker_host_ip)
-  with open("smtps_localhost_proxy/nginx.conf", 'w') as f:
-    f.write(nginx_config)
-
-def generateSelfSignedCert():
-  k = crypto.PKey()
-  k.generate_key(crypto.TYPE_RSA, 4096)
-  cert = crypto.X509()
-  cert.get_subject().C = "NT"
-  cert.get_subject().ST = "stateOrProvinceName"
-  cert.get_subject().L = "localityName"
-  cert.get_subject().O = "organizationName"
-  cert.get_subject().OU = "organizationUnitName"
-  cert.get_subject().CN = "commonName"
-  cert.get_subject().emailAddress = "emailAddress"
-  cert.set_serial_number(0)
-  cert.gmtime_adj_notBefore(0)
-  cert.gmtime_adj_notAfter(100*365*24*60*60)
-  cert.set_issuer(cert.get_subject())
-  cert.set_pubkey(k)
-  cert.sign(k, 'sha256')
-  pem_key = crypto.dump_privatekey(crypto.FILETYPE_PEM, k).decode('utf-8')
-  pem_cert = crypto.dump_certificate(crypto.FILETYPE_PEM, cert).decode('utf-8')
-  return pem_key, pem_cert
-
-def evalCondition(condition):
-  EXPRESSION_INPUTS = {}
-  EXPRESSION_INPUTS['args.mssql'] = args.mssql
-  if type(condition) != str:
-    raise Exception("Invalid conditions specified")
-  if condition not in EXPRESSION_INPUTS:
-    return False
-  return EXPRESSION_INPUTS[condition]
-
-def evalConditionsProduct(conditions):
-  if type(conditions) != list:
-    raise Exception("Invalid conditions specified")
-  for condition in conditions:
-    if evalCondition(condition) == False:
-      return False
-  return True
-
-def evalConditionsSOP(conditions):
-  if conditions == None:
-    return True
-  if type(conditions) != list:
-    raise Exception("Invalid conditions specified")
-  # Conditions are listed in sum-of-products form
-  for condition in conditions:
-    if type(condition) != list:
-      raise Exception("Invalid conditions specified")
-    if evalConditionsProduct(condition) == True:
-      return True
-  return False
-
-def getEnvironmentVariablesMap(docker_image_name):
-  env_map = getJSONMapFromDockerImage(docker_image_name, "/external_project/docker_compose_env.json")
-  if env_map == None:
-    return {}
-
-  if type(env_map) != dict:
-    raise Exception("Invalid environment variables map in {}".format(docker_image_name))
-
-  env_lists = {}
-  for container_name in env_map:
-    env_lists[container_name] = []
-
-    if type(env_map[container_name]) != list:
-      raise Exception("Invalid environment variables map in {}".format(docker_image_name))
-
-    for evar in env_map[container_name]:
-      if evalConditionsSOP(evar['conditions']):
-        k = evar['name']
-        v = evar['value']
-        env_lists[container_name].append("{}={}".format(k, v))
-  return env_lists
-
-def getWiredTigerCacheSizeGB(mongo_node_count=1):
-  total_system_memory_bytes = psutil.virtual_memory().total
-  total_system_memory_gb = total_system_memory_bytes / (1024 * 1024 * 1024)
-
-  # Total memory allocated for MongoDB - be it a single MongoDB container of a cluster of shards and replicas:
-  total_mongo_memory_gb = MEMORY_SPLIT_MONGO_DATA_STORAGE * total_system_memory_gb
-
-  # What should the WIRED_TIGER_CACHE_SIZE_GB value be for the MongoDB node in question?
-  wired_tiger_cache_size_gb = total_mongo_memory_gb / mongo_node_count
-
-  # Floor to 2 decimal places
-  wired_tiger_cache_size_gb = math.floor(100 * wired_tiger_cache_size_gb) / 100.0
-
-  # The value of WiredTigerCacheSizeGB must range between 0.25GB and 10000GB as per MongoDB documentation
-  if (wired_tiger_cache_size_gb < 0.25) or (wired_tiger_cache_size_gb > 10000):
-    raise Exception("WiredTigerCacheSizeGB cannot be less than 0.25 or greater than 10000")
-
-  return wired_tiger_cache_size_gb
-
-def getCardsJavaMemoryLimitMB():
-  total_system_memory_bytes = psutil.virtual_memory().total
-  total_system_memory_mb = total_system_memory_bytes / (1024 * 1024)
-
-  cards_java_memory_limit_mb = MEMORY_SPLIT_CARDS_JAVA * total_system_memory_mb
-
-  # Floor down to the nearest integer MB
-  return math.floor(cards_java_memory_limit_mb)
-
-def newListIfEmpty(yaml_object, *keys):
-  # Descend down the yaml_object through the keys
-  list_parent_object = yaml_object
-  for key in keys[0:-1]:
-    list_parent_object = list_parent_object[key]
-  list_name = keys[-1]
-  if list_name in list_parent_object.keys():
-    if type(list_parent_object[list_name]) is list:
-      return list_parent_object[list_name]
-  list_parent_object[list_name] = []
-  return list_parent_object[list_name]
 
 OUTPUT_FILENAME = "docker-compose.yml"
 
