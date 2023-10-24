@@ -392,7 +392,7 @@ def getEnvironmentVariablesMap(docker_image_name):
         env_lists[container_name].append("{}={}".format(k, v))
   return env_lists
 
-#Validate before doing anything else
+#### Validate the supplied configuration before attempting to build it
 
 # Ensure that we have some type of data storage for CARDS
 mongo_storage_type_settings = [args.mongo_singular, args.mongo_cluster, args.oak_filesystem, args.external_mongo, args.percona_singular]
@@ -487,6 +487,9 @@ if (args.data_db_mount is not None) and args.percona_singular:
   if data_db_mount_stat.st_uid != 1001:
     print("ERROR: The file specified by --percona_singular must have UID=1001")
     sys.exit(-1)
+
+
+#### At this point we have completed validation and can start generating the Docker Compose environment
 
 OUTPUT_FILENAME = "docker-compose.yml"
 
