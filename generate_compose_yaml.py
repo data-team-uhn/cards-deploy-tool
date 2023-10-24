@@ -66,9 +66,24 @@ ADMINER_DOCKER_RELEASE_TAG = "4.8.1"
 MINIO_DOCKER_RELEASE_TAG = "RELEASE.2022-09-17T00-09-45Z"
 
 argparser = argparse.ArgumentParser()
+
+### --- BEGIN: Docker image selection ---
+# CARDS Docker image
 argparser.add_argument('--cards_docker_image', help='The CARDS Docker image to deploy (eg. ghcr.io/data-team-uhn/cards)', required=True)
+argparser.add_argument('--dev_docker_image', help='Indicate that the CARDS Docker image being used was built for development, not production.', action='store_true')
+### --- END: Docker image selection ---
+
+
+
+### --- BEGIN: CARDS data persistence configuration ---
+# Locally provisioned Mongo data persistence configuration
 argparser.add_argument('--mongo_singular', help='Use a single MongoDB Docker container for data storage', action='store_true')
 argparser.add_argument('--mongo_cluster', help='Use a cluster of MongoDB shards and replicas for data storage', action='store_true')
+argparser.add_argument('--shards', help='Number of MongoDB shards', default=1, type=int)
+argparser.add_argument('--replicas', help='Number of MongoDB replicas per shard (must be an odd number)', default=3, type=int)
+argparser.add_argument('--config_replicas', help='Number of MongoDB cluster configuration servers (must be an odd number)', default=3, type=int)
+
+# Locally provisioned Percona data persistence configuration
 argparser.add_argument('--percona_singular', help='Use a single Docker container of Percona Server for MongoDB for data storage', action='store_true')
 argparser.add_argument('--percona_encryption_keyfile', help='Enable encryption-at-rest for the singular Percona Server for MongoDB instance using the provided keyfile')
 argparser.add_argument('--percona_encryption_vault_server')
@@ -76,50 +91,127 @@ argparser.add_argument('--percona_encryption_vault_port', type=int, default=8200
 argparser.add_argument('--percona_encryption_vault_token_file')
 argparser.add_argument('--percona_encryption_vault_secret')
 argparser.add_argument('--percona_encryption_vault_disable_tls_for_testing', action='store_true')
+
+# Locally provisioned database data storage location
 argparser.add_argument('--data_db_mount', help='If using --mongo_singular or --percona_singular, mount /data/db to a given location instead of to a Docker volume')
-argparser.add_argument('--shards', help='Number of MongoDB shards', default=1, type=int)
-argparser.add_argument('--replicas', help='Number of MongoDB replicas per shard (must be an odd number)', default=3, type=int)
-argparser.add_argument('--config_replicas', help='Number of MongoDB cluster configuration servers (must be an odd number)', default=3, type=int)
-argparser.add_argument('--custom_env_file', help='Enable a custom file with environment variables')
-argparser.add_argument('--demo', help='Enable the Demo Banner, Upgrade Marker Flag, and Demo Forms', action='store_true')
-argparser.add_argument('--demo_banner', help='Enable only the Demo Banner', action='store_true')
-argparser.add_argument('--dev_docker_image', help='Indicate that the CARDS Docker image being used was built for development, not production.', action='store_true')
-argparser.add_argument('--composum', help='Enable Composum for the CARDS admin account', action='store_true')
-argparser.add_argument('--debug', help='Debug the CARDS instance on port 5005', action='store_true')
-argparser.add_argument('--adminer', help='Add an Adminer Docker container for database interaction via web browser', action='store_true')
-argparser.add_argument('--adminer_port', help='If --adminer is specified, bind it to this localhost port [default: 1435]', default=1435, type=int)
-argparser.add_argument('--enable_backup_server', help='Add a cards/backup_recorder service to the cluster', action='store_true')
-argparser.add_argument('--backup_server_path', help='Host OS path where the backup_recorder container should store its backup files')
-argparser.add_argument('--enable_ncr', help='Add a Neural Concept Recognizer service to the cluster', action='store_true')
-argparser.add_argument('--oak_filesystem', help='Use the filesystem (instead of MongoDB) as the back-end for Oak/JCR', action='store_true')
+
+# Externally provisioned MongoDB URI
 argparser.add_argument('--external_mongo', help='Use an external MongoDB instance instead of providing our own', action='store_true')
 argparser.add_argument('--external_mongo_uri', help='URI of the external MongoDB instance. Only valid if --external_mongo is specified.')
 argparser.add_argument('--external_mongo_dbname', help='Database name of the external MongoDB instance. Only valid if --external_mongo is specified.')
-argparser.add_argument('--clarity', help='Enable the clarity-integration CARDS module.', action='store_true')
-argparser.add_argument('--mssql', help='Start up a MS-SQL instance with test data', action='store_true')
-argparser.add_argument('--expose_mssql', help='If --mssql is specified, forward the SQL service to the specified port (defaults to 1433 if --expose_mssql is specified without a port parameter)', nargs='?', const=1433, type=int)
+
+# Data persistence provided by file system (not for production use)
+argparser.add_argument('--oak_filesystem', help='Use the filesystem (instead of MongoDB) as the back-end for Oak/JCR', action='store_true')
+### --- END: CARDS data persistence configuration ---
+
+
+
+### --- BEGIN: CARDS features/configurations ---
+# Enable demo features
+argparser.add_argument('--demo', help='Enable the Demo Banner, Upgrade Marker Flag, and Demo Forms', action='store_true')
+argparser.add_argument('--demo_banner', help='Enable only the Demo Banner', action='store_true')
+
+# Enable Composum JCR browser
+argparser.add_argument('--composum', help='Enable Composum for the CARDS admin account', action='store_true')
+
+# Enable SAML authentication for CARDS
 argparser.add_argument('--saml', help='Make the Apache Sling SAML2 Handler OSGi bundle available for SAML-based logins', action='store_true')
 argparser.add_argument('--saml_idp_destination', help='URL to redirect to for SAML logins')
 argparser.add_argument('--saml_cloud_iam_demo', help='Enable SAML authentication with CARDS via the Cloud-IAM.com demo', action='store_true')
-argparser.add_argument('--server_address', help='Domain name (or Domain name:port) that the public will use for accessing this CARDS deployment')
-argparser.add_argument('--slack_notifications', help='Enable the periodic sending of performance metrics to a Slack channel', action='store_true')
+
+# Enable SMTPS email sending from CARDS
 argparser.add_argument('--smtps', help='Enable SMTPS emailing functionality', action='store_true')
-argparser.add_argument('--smtps_localhost_proxy', help='Run an SSL termination proxy so that the CARDS container may connect to the host\'s SMTP server at localhost:25', action='store_true')
-argparser.add_argument('--smtps_test_container', help='Enable the mock SMTPS (cards/postfix-docker) container for viewing CARDS-sent emails.', action='store_true')
-argparser.add_argument('--smtps_test_mail_path', help='Host OS path where the email mbox file from smtps_test_container is stored')
-argparser.add_argument('--s3_test_container', help='Add a MinIO S3 Bucket Docker container for testing S3 data exports', action='store_true')
+
+# Enable CARDS integration with the Clarity EPIC database
+argparser.add_argument('--clarity', help='Enable the clarity-integration CARDS module.', action='store_true')
+
+# Enable sending notifications to Slack
+argparser.add_argument('--slack_notifications', help='Enable the periodic sending of performance metrics to a Slack channel', action='store_true')
+
+# Misc. CARDS configurations via environment variables
+argparser.add_argument('--custom_env_file', help='Enable a custom file with environment variables for the CARDS container')
+### --- END: CARDS features/configurations ---
+
+
+
+### --- BEGIN: Proxy configuration ---
+# SSL
 argparser.add_argument('--ssl_proxy', help='Protect this service with SSL/TLS (use https:// instead of http://)', action='store_true')
 argparser.add_argument('--self_signed_ssl_proxy', help='Generate a self-signed SSL certificate for the proxy to use (used mainly for testing purposes).', action='store_true')
 argparser.add_argument('--behind_ssl_termination', help='Listen only for non-encrypted HTTP connections but apply all HTTPS headers (as client connections are made through an upstream SSL-terminating reverse proxy)', action='store_true')
-argparser.add_argument('--sling_admin_port', help='The localhost TCP port which should be forwarded to cardsinitial:8080', type=int)
-argparser.add_argument('--subnet', help='Manually specify the subnet of IP addresses to be used by the containers in this docker-compose environment (eg. --subnet 172.99.0.0/16)')
-argparser.add_argument('--vault_dev_server', help='Add a HashiCorp Vault (development mode) container to the set of services', action='store_true')
+
+# Configuration for exposing one port (to a private network) where CARDS logins are permitted and another port (to a public network) where CARDS logins are not permitted
 argparser.add_argument('--web_port_admin', help='If specified, will listen for connections on this port (and not 8080/443) and forward them to the full-access reverse proxy (permitting logins)', type=int)
 argparser.add_argument('--web_port_user', help='If specified, will listen for connections on this port and forward them to the restricted-access reverse proxy (logins not permitted)', type=int)
 argparser.add_argument('--web_port_user_root_redirect', help='The client accessing / over --web_port_user will automatically be redirected to this page', default='/Survey.html')
-argparser.add_argument('--timezone', help='Specify a timezone (eg. America/Toronto) other than the one of the host system')
-args = argparser.parse_args()
 
+# Domain name
+argparser.add_argument('--server_address', help='Domain name (or Domain name:port) that the public will use for accessing this CARDS deployment')
+
+# Direct access via localhost only
+argparser.add_argument('--sling_admin_port', help='The localhost TCP port which should be forwarded to cardsinitial:8080', type=int)
+### --- END: Proxy configuration ---
+
+
+
+### --- BEGIN: Containers to be used to provide microservices in production ---
+# Data backup via periodic push to webhook
+argparser.add_argument('--enable_backup_server', help='Add a cards/backup_recorder service to the cluster', action='store_true')
+argparser.add_argument('--backup_server_path', help='Host OS path where the backup_recorder container should store its backup files')
+
+# SMTPS SSL termination proxy for sending emails to localhost mail server
+argparser.add_argument('--smtps_localhost_proxy', help='Run an SSL termination proxy so that the CARDS container may connect to the host\'s SMTP server at localhost:25', action='store_true')
+
+# NeuralCR for text annotation
+argparser.add_argument('--enable_ncr', help='Add a Neural Concept Recognizer service to the cluster', action='store_true')
+### --- END: Containers to be used to provide microservices in production ---
+
+
+
+### --- BEGIN: Containers useful only for testing/development/debugging ---
+# Adminer Docker container for manipulating databases
+argparser.add_argument('--adminer', help='Add an Adminer Docker container for database interaction via web browser', action='store_true')
+argparser.add_argument('--adminer_port', help='If --adminer is specified, bind it to this localhost port [default: 1435]', default=1435, type=int)
+
+# SMTPS test container for receiving emails sent from CARDS to a local mail file
+argparser.add_argument('--smtps_test_container', help='Enable the mock SMTPS (cards/postfix-docker) container for viewing CARDS-sent emails.', action='store_true')
+argparser.add_argument('--smtps_test_mail_path', help='Host OS path where the email mbox file from smtps_test_container is stored')
+
+# MS SQL database (used to simulate Clarity EPIC database)
+argparser.add_argument('--mssql', help='Start up a MS-SQL instance with test data', action='store_true')
+argparser.add_argument('--expose_mssql', help='If --mssql is specified, forward the SQL service to the specified port (defaults to 1433 if --expose_mssql is specified without a port parameter)', nargs='?', const=1433, type=int)
+
+# Vault server running in development mode
+argparser.add_argument('--vault_dev_server', help='Add a HashiCorp Vault (development mode) container to the set of services', action='store_true')
+
+# MinIO S3 bucket container for testing S3 bucket integrations
+argparser.add_argument('--s3_test_container', help='Add a MinIO S3 Bucket Docker container for testing S3 data exports', action='store_true')
+### --- END: Containers useful only for testing/development/debugging ---
+
+
+
+### --- BEGIN: Docker specific configurations ---
+# Docker internal network subnet configuration
+argparser.add_argument('--subnet', help='Manually specify the subnet of IP addresses to be used by the containers in this docker-compose environment (eg. --subnet 172.99.0.0/16)')
+### --- END: Docker specific configurations ---
+
+
+
+### --- BEGIN: Global configurations (configuration options applied to all containers) ---
+# Setting the timezone via the TZ environment variable
+argparser.add_argument('--timezone', help='Specify a timezone (eg. America/Toronto) other than the one of the host system')
+### --- END: Global configurations (configuration options applied to all containers) ---
+
+
+
+### --- BEGIN: Low-level Debugging ---
+# Allow for JDB to attach to the CARDS Java process on port 5005
+argparser.add_argument('--debug', help='Debug the CARDS instance on port 5005', action='store_true')
+### --- END: Low-level Debugging ---
+
+
+
+args = argparser.parse_args()
 MONGO_SHARD_COUNT = args.shards
 MONGO_REPLICA_COUNT = args.replicas
 CONFIGDB_REPLICA_COUNT = args.config_replicas
