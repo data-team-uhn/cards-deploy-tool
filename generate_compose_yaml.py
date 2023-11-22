@@ -71,6 +71,7 @@ argparser = argparse.ArgumentParser()
 # CARDS Docker image
 argparser.add_argument('--cards_docker_image', help='The CARDS Docker image to deploy (eg. ghcr.io/data-team-uhn/cards)', required=True)
 argparser.add_argument('--dev_docker_image', help='Indicate that the CARDS Docker image being used was built for development, not production.', action='store_true')
+argparser.add_argument('--cards_generic_jars_repo', help='Path to the directory of JARs for the generic CARDS platform')
 ### --- END: Docker image selection ---
 
 
@@ -726,6 +727,8 @@ if os.path.exists("/etc/localtime"):
   yaml_obj['services']['cardsinitial']['volumes'].append("/etc/localtime:/etc/localtime:ro")
 if args.dev_docker_image:
   yaml_obj['services']['cardsinitial']['volumes'].append("{}:/root/.m2:ro".format(os.path.join(os.environ['HOME'], '.m2')))
+  if args.cards_generic_jars_repo:
+    yaml_obj['services']['cardsinitial']['volumes'].append("{}:/root/.cards-generic-m2:ro".format(args.cards_generic_jars_repo))
 
 if args.custom_env_file:
   yaml_obj['services']['cardsinitial']['env_file'] = args.custom_env_file
