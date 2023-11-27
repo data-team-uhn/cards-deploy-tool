@@ -1,0 +1,49 @@
+[
+  {
+    "name": "Generate the Docker Compose Environment",
+    "exec": {
+      "type": "shell",
+      "code": "python3 generate_compose_yaml.py --cards_docker_image cards/cards:latest --dev_docker_image --oak_filesystem"
+    }
+  },
+  {
+    "name": "Start the Docker Compose Environment",
+    "exec": {
+      "type": "shell",
+      "code": "docker-compose build && docker-compose up -d"
+    }
+  },
+  {
+    "name": "Wait for 1 minute for CARDS to start",
+    "exec": {
+      "type": "shell",
+      "code": "sleep 60"
+    }
+  },
+  {
+    "name": "Ensure that it's the generic CARDS platform that is running",
+    "exec": {
+      "type": "httpResponse",
+      "httpMethod": "GET",
+      "url": "http://localhost:8080/login",
+      "responseCode": 200,
+      "responseContains": [
+        "<title>Clinical ARchive for Data Science</title>",
+        "<meta name=\"logoLight\" content=\"/libs/cards/resources/media/default/logo_light_bg.png\"/>",
+        "<meta name=\"logoDark\" content=\"/libs/cards/resources/media/default/logo.png\"/>"
+      ],
+      "responseContainsNot": [
+        "<title>SPARC</title>",
+        "<meta name=\"logoLight\" content=\"/libs/cards/resources/media/sparc/sparc-logo.png\"/>",
+        "<meta name=\"logoDark\" content=\"/libs/cards/resources/media/sparc/sparc-logo.png\"/>"
+      ]
+    }
+  },
+  {
+    "name": "Clean up",
+    "exec": {
+      "type": "shell",
+      "code": "docker-compose down && docker-compose rm && docker volume prune -f && ./cleanup.sh"
+    }
+  }
+]

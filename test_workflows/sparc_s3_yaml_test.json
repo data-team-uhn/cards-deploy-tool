@@ -1,0 +1,43 @@
+[
+  {
+    "name": "Generate the Docker Compose Environment",
+    "exec": {
+      "type": "shell",
+      "code": "python3 generate_compose_yaml.py --cards_docker_image cards/cards4sparc:latest --dev_docker_image --oak_filesystem --s3_test_container"
+    }
+  },
+  {
+    "name": "Checking that only the cardsinitial, proxy, and s3_test_container containers will be deployed",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services"],
+      "comparator": "keysetEquals",
+      "expectedValue": ["cardsinitial", "proxy", "s3_test_container"]
+    }
+  },
+  {
+    "name": "Checking CARDS_PROJECT environment variable for cardsinitial container",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services", "cardsinitial", "environment"],
+      "comparator": "contains",
+      "expectedValue": "CARDS_PROJECT=cards4sparc"
+    }
+  },
+  {
+    "name": "Checking CARDS_APP_NAME environment variable for proxy container",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services", "proxy", "environment"],
+      "comparator": "contains",
+      "expectedValue": "CARDS_APP_NAME=SPARC"
+    }
+  },
+  {
+    "name": "Clean up",
+    "exec": {
+      "type": "shell",
+      "code": "./cleanup.sh"
+    }
+  }
+]

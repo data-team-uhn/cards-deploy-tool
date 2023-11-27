@@ -31,12 +31,13 @@ try:
   import argparse
   import zoneinfo
   from OpenSSL import crypto, SSL
+  from dockerImageUtils import copyFileFromDockerImage, getJSONMapFromDockerImage
 except ImportError:
   print("Error: Missing dependencies!")
   print()
   print("On Debian/Ubuntu, these missing dependencies can be installed with:")
   print()
-  print("\tapt install python3-yaml python3-psutil python3-tzlocal python3-openssl")
+  print("\tapt install python3-yaml python3-psutil python3-tzlocal python3-openssl python3-docker")
   print()
   print("On any other system, these missing dependencies can be installed with:")
   print()
@@ -58,7 +59,6 @@ except ImportError:
   print()
   sys.exit(-1)
 
-from CardsDockerTagProperty import CARDS_DOCKER_TAG
 from CloudIAMdemoKeystoreSha256Property import CLOUD_IAM_DEMO_KEYSTORE_SHA256
 from ServerMemorySplitConfig import MEMORY_SPLIT_CARDS_JAVA, MEMORY_SPLIT_MONGO_DATA_STORAGE
 
@@ -66,8 +66,25 @@ ADMINER_DOCKER_RELEASE_TAG = "4.8.1"
 MINIO_DOCKER_RELEASE_TAG = "RELEASE.2022-09-17T00-09-45Z"
 
 argparser = argparse.ArgumentParser()
+
+### --- BEGIN: Docker image selection ---
+# CARDS Docker image
+argparser.add_argument('--cards_docker_image', help='The CARDS Docker image to deploy (eg. ghcr.io/data-team-uhn/cards)', required=True)
+argparser.add_argument('--dev_docker_image', help='Indicate that the CARDS Docker image being used was built for development, not production.', action='store_true')
+argparser.add_argument('--cards_generic_jars_repo', help='Path to the directory of JARs for the generic CARDS platform')
+### --- END: Docker image selection ---
+
+
+
+### --- BEGIN: CARDS data persistence configuration ---
+# Locally provisioned Mongo data persistence configuration
 argparser.add_argument('--mongo_singular', help='Use a single MongoDB Docker container for data storage', action='store_true')
 argparser.add_argument('--mongo_cluster', help='Use a cluster of MongoDB shards and replicas for data storage', action='store_true')
+argparser.add_argument('--shards', help='Number of MongoDB shards', default=1, type=int)
+argparser.add_argument('--replicas', help='Number of MongoDB replicas per shard (must be an odd number)', default=3, type=int)
+argparser.add_argument('--config_replicas', help='Number of MongoDB cluster configuration servers (must be an odd number)', default=3, type=int)
+
+# Locally provisioned Percona data persistence configuration
 argparser.add_argument('--percona_singular', help='Use a single Docker container of Percona Server for MongoDB for data storage', action='store_true')
 argparser.add_argument('--percona_encryption_keyfile', help='Enable encryption-at-rest for the singular Percona Server for MongoDB instance using the provided keyfile')
 argparser.add_argument('--percona_encryption_vault_server')
@@ -75,61 +92,133 @@ argparser.add_argument('--percona_encryption_vault_port', type=int, default=8200
 argparser.add_argument('--percona_encryption_vault_token_file')
 argparser.add_argument('--percona_encryption_vault_secret')
 argparser.add_argument('--percona_encryption_vault_disable_tls_for_testing', action='store_true')
+
+# Locally provisioned database data storage location
 argparser.add_argument('--data_db_mount', help='If using --mongo_singular or --percona_singular, mount /data/db to a given location instead of to a Docker volume')
-argparser.add_argument('--shards', help='Number of MongoDB shards', default=1, type=int)
-argparser.add_argument('--replicas', help='Number of MongoDB replicas per shard (must be an odd number)', default=3, type=int)
-argparser.add_argument('--config_replicas', help='Number of MongoDB cluster configuration servers (must be an odd number)', default=3, type=int)
-argparser.add_argument('--custom_env_file', help='Enable a custom file with environment variables')
-argparser.add_argument('--cards_project', help='The CARDS project to deploy (eg. cards4proms, cards4lfs, etc...')
-argparser.add_argument('--demo', help='Enable the Demo Banner, Upgrade Marker Flag, and Demo Forms', action='store_true')
-argparser.add_argument('--demo_banner', help='Enable only the Demo Banner', action='store_true')
-argparser.add_argument('--dev_docker_image', help='Indicate that the CARDS Docker image being used was built for development, not production.', action='store_true')
-argparser.add_argument('--composum', help='Enable Composum for the CARDS admin account', action='store_true')
-argparser.add_argument('--debug', help='Debug the CARDS instance on port 5005', action='store_true')
-argparser.add_argument('--adminer', help='Add an Adminer Docker container for database interaction via web browser', action='store_true')
-argparser.add_argument('--adminer_port', help='If --adminer is specified, bind it to this localhost port [default: 1435]', default=1435, type=int)
-argparser.add_argument('--enable_backup_server', help='Add a cards/backup_recorder service to the cluster', action='store_true')
-argparser.add_argument('--backup_server_path', help='Host OS path where the backup_recorder container should store its backup files')
-argparser.add_argument('--enable_ncr', help='Add a Neural Concept Recognizer service to the cluster', action='store_true')
-argparser.add_argument('--oak_filesystem', help='Use the filesystem (instead of MongoDB) as the back-end for Oak/JCR', action='store_true')
+
+# Externally provisioned MongoDB URI
 argparser.add_argument('--external_mongo', help='Use an external MongoDB instance instead of providing our own', action='store_true')
 argparser.add_argument('--external_mongo_uri', help='URI of the external MongoDB instance. Only valid if --external_mongo is specified.')
 argparser.add_argument('--external_mongo_dbname', help='Database name of the external MongoDB instance. Only valid if --external_mongo is specified.')
-argparser.add_argument('--clarity', help='Enable the clarity-integration CARDS module.', action='store_true')
-argparser.add_argument('--mssql', help='Start up a MS-SQL instance with test data', action='store_true')
-argparser.add_argument('--expose_mssql', help='If --mssql is specified, forward the SQL service to the specified port (defaults to 1433 if --expose_mssql is specified without a port parameter)', nargs='?', const=1433, type=int)
+
+# Data persistence provided by file system (not for production use)
+argparser.add_argument('--oak_filesystem', help='Use the filesystem (instead of MongoDB) as the back-end for Oak/JCR', action='store_true')
+### --- END: CARDS data persistence configuration ---
+
+
+
+### --- BEGIN: CARDS features/configurations ---
+# Enable demo features
+argparser.add_argument('--demo', help='Enable the Demo Banner, Upgrade Marker Flag, and Demo Forms', action='store_true')
+argparser.add_argument('--demo_banner', help='Enable only the Demo Banner', action='store_true')
+
+# Enable Composum JCR browser
+argparser.add_argument('--composum', help='Enable Composum for the CARDS admin account', action='store_true')
+
+# Enable SAML authentication for CARDS
 argparser.add_argument('--saml', help='Make the Apache Sling SAML2 Handler OSGi bundle available for SAML-based logins', action='store_true')
 argparser.add_argument('--saml_idp_destination', help='URL to redirect to for SAML logins')
 argparser.add_argument('--saml_cloud_iam_demo', help='Enable SAML authentication with CARDS via the Cloud-IAM.com demo', action='store_true')
-argparser.add_argument('--server_address', help='Domain name (or Domain name:port) that the public will use for accessing this CARDS deployment')
-argparser.add_argument('--slack_notifications', help='Enable the periodic sending of performance metrics to a Slack channel', action='store_true')
+
+# Enable SMTPS email sending from CARDS
 argparser.add_argument('--smtps', help='Enable SMTPS emailing functionality', action='store_true')
-argparser.add_argument('--smtps_localhost_proxy', help='Run an SSL termination proxy so that the CARDS container may connect to the host\'s SMTP server at localhost:25', action='store_true')
-argparser.add_argument('--smtps_test_container', help='Enable the mock SMTPS (cards/postfix-docker) container for viewing CARDS-sent emails.', action='store_true')
-argparser.add_argument('--smtps_test_mail_path', help='Host OS path where the email mbox file from smtps_test_container is stored')
-argparser.add_argument('--s3_test_container', help='Add a MinIO S3 Bucket Docker container for testing S3 data exports', action='store_true')
+
+# Enable CARDS integration with the Clarity EPIC database
+argparser.add_argument('--clarity', help='Enable the clarity-integration CARDS module.', action='store_true')
+
+# Enable sending notifications to Slack
+argparser.add_argument('--slack_notifications', help='Enable the periodic sending of performance metrics to a Slack channel', action='store_true')
+
+# Misc. CARDS configurations via environment variables
+argparser.add_argument('--custom_env_file', help='Enable a custom file with environment variables for the CARDS container')
+### --- END: CARDS features/configurations ---
+
+
+
+### --- BEGIN: Proxy configuration ---
+# SSL
 argparser.add_argument('--ssl_proxy', help='Protect this service with SSL/TLS (use https:// instead of http://)', action='store_true')
 argparser.add_argument('--self_signed_ssl_proxy', help='Generate a self-signed SSL certificate for the proxy to use (used mainly for testing purposes).', action='store_true')
 argparser.add_argument('--behind_ssl_termination', help='Listen only for non-encrypted HTTP connections but apply all HTTPS headers (as client connections are made through an upstream SSL-terminating reverse proxy)', action='store_true')
-argparser.add_argument('--sling_admin_port', help='The localhost TCP port which should be forwarded to cardsinitial:8080', type=int)
-argparser.add_argument('--subnet', help='Manually specify the subnet of IP addresses to be used by the containers in this docker-compose environment (eg. --subnet 172.99.0.0/16)')
-argparser.add_argument('--vault_dev_server', help='Add a HashiCorp Vault (development mode) container to the set of services', action='store_true')
+
+# Configuration for exposing one port (to a private network) where CARDS logins are permitted and another port (to a public network) where CARDS logins are not permitted
 argparser.add_argument('--web_port_admin', help='If specified, will listen for connections on this port (and not 8080/443) and forward them to the full-access reverse proxy (permitting logins)', type=int)
 argparser.add_argument('--web_port_user', help='If specified, will listen for connections on this port and forward them to the restricted-access reverse proxy (logins not permitted)', type=int)
 argparser.add_argument('--web_port_user_root_redirect', help='The client accessing / over --web_port_user will automatically be redirected to this page', default='/Survey.html')
+
+# Domain name
+argparser.add_argument('--server_address', help='Domain name (or Domain name:port) that the public will use for accessing this CARDS deployment')
+
+# Direct access via localhost only
+argparser.add_argument('--sling_admin_port', help='The localhost TCP port which should be forwarded to cardsinitial:8080', type=int)
+### --- END: Proxy configuration ---
+
+
+
+### --- BEGIN: Containers to be used to provide microservices in production ---
+# Data backup via periodic push to webhook
+argparser.add_argument('--enable_backup_server', help='Add a cards/backup_recorder service to the cluster', action='store_true')
+argparser.add_argument('--backup_server_path', help='Host OS path where the backup_recorder container should store its backup files')
+
+# SMTPS SSL termination proxy for sending emails to localhost mail server
+argparser.add_argument('--smtps_localhost_proxy', help='Run an SSL termination proxy so that the CARDS container may connect to the host\'s SMTP server at localhost:25', action='store_true')
+
+# NeuralCR for text annotation
+argparser.add_argument('--enable_ncr', help='Add a Neural Concept Recognizer service to the cluster', action='store_true')
+### --- END: Containers to be used to provide microservices in production ---
+
+
+
+### --- BEGIN: Containers useful only for testing/development/debugging ---
+# Adminer Docker container for manipulating databases
+argparser.add_argument('--adminer', help='Add an Adminer Docker container for database interaction via web browser', action='store_true')
+argparser.add_argument('--adminer_port', help='If --adminer is specified, bind it to this localhost port [default: 1435]', default=1435, type=int)
+
+# SMTPS test container for receiving emails sent from CARDS to a local mail file
+argparser.add_argument('--smtps_test_container', help='Enable the mock SMTPS (cards/postfix-docker) container for viewing CARDS-sent emails.', action='store_true')
+argparser.add_argument('--smtps_test_mail_path', help='Host OS path where the email mbox file from smtps_test_container is stored')
+
+# MS SQL database (used to simulate Clarity EPIC database)
+argparser.add_argument('--mssql', help='Start up a MS-SQL instance with test data', action='store_true')
+argparser.add_argument('--expose_mssql', help='If --mssql is specified, forward the SQL service to the specified port (defaults to 1433 if --expose_mssql is specified without a port parameter)', nargs='?', const=1433, type=int)
+
+# Vault server running in development mode
+argparser.add_argument('--vault_dev_server', help='Add a HashiCorp Vault (development mode) container to the set of services', action='store_true')
+
+# MinIO S3 bucket container for testing S3 bucket integrations
+argparser.add_argument('--s3_test_container', help='Add a MinIO S3 Bucket Docker container for testing S3 data exports', action='store_true')
+### --- END: Containers useful only for testing/development/debugging ---
+
+
+
+### --- BEGIN: Docker specific configurations ---
+# Docker internal network subnet configuration
+argparser.add_argument('--subnet', help='Manually specify the subnet of IP addresses to be used by the containers in this docker-compose environment (eg. --subnet 172.99.0.0/16)')
+### --- END: Docker specific configurations ---
+
+
+
+### --- BEGIN: Global configurations (configuration options applied to all containers) ---
+# Setting the timezone via the TZ environment variable
 argparser.add_argument('--timezone', help='Specify a timezone (eg. America/Toronto) other than the one of the host system')
+### --- END: Global configurations (configuration options applied to all containers) ---
+
+
+
+### --- BEGIN: Low-level Debugging ---
+# Allow for JDB to attach to the CARDS Java process on port 5005
+argparser.add_argument('--debug', help='Debug the CARDS instance on port 5005', action='store_true')
+### --- END: Low-level Debugging ---
+
+# Parse the supplied CLI args
 args = argparser.parse_args()
 
-MONGO_SHARD_COUNT = args.shards
-MONGO_REPLICA_COUNT = args.replicas
-CONFIGDB_REPLICA_COUNT = args.config_replicas
-ENABLE_BACKUP_SERVER = args.enable_backup_server
-ENABLE_NCR = args.enable_ncr
-SSL_PROXY = args.ssl_proxy
-
+# Configure the prompts that should be raised if a required CLI argument is missing
 MISSING_ARG_PROMPTS = {}
 MISSING_ARG_PROMPTS['server_address'] = "Enter the public-facing server address for this deployment (eg. localhost:8080): "
 
+
+### Basic utility functions
 def sha256FileHash(filepath):
   hasher = hashlib.sha256()
   with open(filepath, 'rb') as f:
@@ -156,6 +245,56 @@ def getArgValueOrPrompt(arg_name):
       getArgValueOrPrompt.kv_map[arg_name] = val
       return val
 
+def newListIfEmpty(yaml_object, *keys):
+  # Descend down the yaml_object through the keys
+  list_parent_object = yaml_object
+  for key in keys[0:-1]:
+    list_parent_object = list_parent_object[key]
+  list_name = keys[-1]
+  if list_name in list_parent_object.keys():
+    if type(list_parent_object[list_name]) is list:
+      return list_parent_object[list_name]
+  list_parent_object[list_name] = []
+  return list_parent_object[list_name]
+
+def getDockerHostIP(subnet):
+  network_address = subnet.split('/')[0]
+  network_address_octets = network_address.split('.')
+  network_address_octets[-1] = '1'
+  return '.'.join(network_address_octets)
+
+def evalCondition(condition):
+  EXPRESSION_INPUTS = {}
+  EXPRESSION_INPUTS['args.mssql'] = args.mssql
+  if type(condition) != str:
+    raise Exception("Invalid conditions specified")
+  if condition not in EXPRESSION_INPUTS:
+    return False
+  return EXPRESSION_INPUTS[condition]
+
+def evalConditionsProduct(conditions):
+  if type(conditions) != list:
+    raise Exception("Invalid conditions specified")
+  for condition in conditions:
+    if evalCondition(condition) == False:
+      return False
+  return True
+
+def evalConditionsSOP(conditions):
+  if conditions == None:
+    return True
+  if type(conditions) != list:
+    raise Exception("Invalid conditions specified")
+  # Conditions are listed in sum-of-products form
+  for condition in conditions:
+    if type(condition) != list:
+      raise Exception("Invalid conditions specified")
+    if evalConditionsProduct(condition) == True:
+      return True
+  return False
+
+
+### Functions for host specific configuration
 def getTimezoneName():
   if args.timezone:
     return args.timezone
@@ -166,7 +305,89 @@ def getTimezoneName():
     else:
       return hosts_localzone.zone
 
-#Validate before doing anything else
+def getWiredTigerCacheSizeGB(mongo_node_count=1):
+  total_system_memory_bytes = psutil.virtual_memory().total
+  total_system_memory_gb = total_system_memory_bytes / (1024 * 1024 * 1024)
+
+  # Total memory allocated for MongoDB - be it a single MongoDB container of a cluster of shards and replicas:
+  total_mongo_memory_gb = MEMORY_SPLIT_MONGO_DATA_STORAGE * total_system_memory_gb
+
+  # What should the WIRED_TIGER_CACHE_SIZE_GB value be for the MongoDB node in question?
+  wired_tiger_cache_size_gb = total_mongo_memory_gb / mongo_node_count
+
+  # Floor to 2 decimal places
+  wired_tiger_cache_size_gb = math.floor(100 * wired_tiger_cache_size_gb) / 100.0
+
+  # The value of WiredTigerCacheSizeGB must range between 0.25GB and 10000GB as per MongoDB documentation
+  if (wired_tiger_cache_size_gb < 0.25) or (wired_tiger_cache_size_gb > 10000):
+    raise Exception("WiredTigerCacheSizeGB cannot be less than 0.25 or greater than 10000")
+
+  return wired_tiger_cache_size_gb
+
+def getCardsJavaMemoryLimitMB():
+  total_system_memory_bytes = psutil.virtual_memory().total
+  total_system_memory_mb = total_system_memory_bytes / (1024 * 1024)
+
+  cards_java_memory_limit_mb = MEMORY_SPLIT_CARDS_JAVA * total_system_memory_mb
+
+  # Floor down to the nearest integer MB
+  return math.floor(cards_java_memory_limit_mb)
+
+
+### Functions for local file generation
+def generateSmtpsProxyConfigFile(docker_host_ip):
+  with open("smtps_localhost_proxy/nginx.conf.template", 'r') as f:
+    nginx_template = f.read()
+  nginx_config = nginx_template.replace("${DOCKER_HOST_IP}", docker_host_ip)
+  with open("smtps_localhost_proxy/nginx.conf", 'w') as f:
+    f.write(nginx_config)
+
+def generateSelfSignedCert():
+  k = crypto.PKey()
+  k.generate_key(crypto.TYPE_RSA, 4096)
+  cert = crypto.X509()
+  cert.get_subject().C = "NT"
+  cert.get_subject().ST = "stateOrProvinceName"
+  cert.get_subject().L = "localityName"
+  cert.get_subject().O = "organizationName"
+  cert.get_subject().OU = "organizationUnitName"
+  cert.get_subject().CN = "commonName"
+  cert.get_subject().emailAddress = "emailAddress"
+  cert.set_serial_number(0)
+  cert.gmtime_adj_notBefore(0)
+  cert.gmtime_adj_notAfter(100*365*24*60*60)
+  cert.set_issuer(cert.get_subject())
+  cert.set_pubkey(k)
+  cert.sign(k, 'sha256')
+  pem_key = crypto.dump_privatekey(crypto.FILETYPE_PEM, k).decode('utf-8')
+  pem_cert = crypto.dump_certificate(crypto.FILETYPE_PEM, cert).decode('utf-8')
+  return pem_key, pem_cert
+
+
+### Functions for accessing Docker images
+def getEnvironmentVariablesMap(docker_image_name):
+  env_map = getJSONMapFromDockerImage(docker_image_name, "/external_project/docker_compose_env.json")
+  if env_map == None:
+    return {}
+
+  if type(env_map) != dict:
+    raise Exception("Invalid environment variables map in {}".format(docker_image_name))
+
+  env_lists = {}
+  for container_name in env_map:
+    env_lists[container_name] = []
+
+    if type(env_map[container_name]) != list:
+      raise Exception("Invalid environment variables map in {}".format(docker_image_name))
+
+    for evar in env_map[container_name]:
+      if evalConditionsSOP(evar['conditions']):
+        k = evar['name']
+        v = evar['value']
+        env_lists[container_name].append("{}={}".format(k, v))
+  return env_lists
+
+#### Validate the supplied configuration before attempting to build it
 
 # Ensure that we have some type of data storage for CARDS
 mongo_storage_type_settings = [args.mongo_singular, args.mongo_cluster, args.oak_filesystem, args.external_mongo, args.percona_singular]
@@ -192,11 +413,11 @@ else:
   sys.exit(-1)
 
 if args.mongo_cluster:
-  if (MONGO_REPLICA_COUNT % 2) != 1:
+  if (args.replicas % 2) != 1:
     print("ERROR: Replica count must be *odd* to achieve distributed consensus")
     sys.exit(-1)
 
-  if (CONFIGDB_REPLICA_COUNT % 2) != 1:
+  if (args.config_replicas % 2) != 1:
     print("ERROR: Config replica count must be *odd* to achieve distributed consensus")
     sys.exit(-1)
 
@@ -210,7 +431,7 @@ if args.smtps_test_container:
     print("ERROR: A --smtps_test_mail_path must be specified when using --smtps_test_container")
     sys.exit(-1)
 
-if ENABLE_BACKUP_SERVER:
+if args.enable_backup_server:
   if not args.backup_server_path:
     print("ERROR: A --backup_server_path must be specified with using --enable_backup_server")
     sys.exit(-1)
@@ -262,179 +483,8 @@ if (args.data_db_mount is not None) and args.percona_singular:
     print("ERROR: The file specified by --percona_singular must have UID=1001")
     sys.exit(-1)
 
-def getDockerHostIP(subnet):
-  network_address = subnet.split('/')[0]
-  network_address_octets = network_address.split('.')
-  network_address_octets[-1] = '1'
-  return '.'.join(network_address_octets)
 
-def generateSmtpsProxyConfigFile(docker_host_ip):
-  with open("smtps_localhost_proxy/nginx.conf.template", 'r') as f:
-    nginx_template = f.read()
-  nginx_config = nginx_template.replace("${DOCKER_HOST_IP}", docker_host_ip)
-  with open("smtps_localhost_proxy/nginx.conf", 'w') as f:
-    f.write(nginx_config)
-
-def generateSelfSignedCert():
-  k = crypto.PKey()
-  k.generate_key(crypto.TYPE_RSA, 4096)
-  cert = crypto.X509()
-  cert.get_subject().C = "NT"
-  cert.get_subject().ST = "stateOrProvinceName"
-  cert.get_subject().L = "localityName"
-  cert.get_subject().O = "organizationName"
-  cert.get_subject().OU = "organizationUnitName"
-  cert.get_subject().CN = "commonName"
-  cert.get_subject().emailAddress = "emailAddress"
-  cert.set_serial_number(0)
-  cert.gmtime_adj_notBefore(0)
-  cert.gmtime_adj_notAfter(100*365*24*60*60)
-  cert.set_issuer(cert.get_subject())
-  cert.set_pubkey(k)
-  cert.sign(k, 'sha256')
-  pem_key = crypto.dump_privatekey(crypto.FILETYPE_PEM, k).decode('utf-8')
-  pem_cert = crypto.dump_certificate(crypto.FILETYPE_PEM, cert).decode('utf-8')
-  return pem_key, pem_cert
-
-def getPathToProjectResourcesDirectory(project_name):
-  CARDS4_PREFIX = "cards4"
-  resourcesPathMap = {}
-
-  # If an entry for this project_name exists in resourcesPathMap use it instead of anything else
-  if project_name in resourcesPathMap:
-    return resourcesPathMap[project_name]
-
-  if not project_name.startswith(CARDS4_PREFIX):
-    return None
-
-  project_id = project_name[len(CARDS4_PREFIX):]
-  return "../{}-resources/".format(project_id)
-
-def getPathToConfDirectory(project_name):
-  project_resources_dir = getPathToProjectResourcesDirectory(project_name)
-  if project_resources_dir is not None:
-    return os.path.join(project_resources_dir, "clinical-data/src/main/resources/SLING-INF/content/libs/cards/conf/")
-
-  return None
-
-def getPathToMediaContentDirectory(project_name):
-  project_resources_dir = getPathToProjectResourcesDirectory(project_name)
-  if project_resources_dir is not None:
-    return os.path.join(project_resources_dir, "clinical-data/src/main/media/SLING-INF/content")
-
-  return None
-
-def getLogoByResourcesDirectory(project_name):
-  path_to_media_json = os.path.join(getPathToConfDirectory(project_name), "Media.json")
-  if not os.path.exists(path_to_media_json):
-    print("Warning: {} does not exist.".format(path_to_media_json))
-    return None
-
-  with open(path_to_media_json, 'r') as f_json:
-    try:
-      media_config = json.load(f_json)
-    except json.decoder.JSONDecodeError:
-      print("Warning: {} contains invalid JSON.".format(path_to_media_json))
-      return None
-
-  if "logoLight" not in media_config:
-    print("Warning: 'logoLight' was not specified in {}.".format(path_to_media_json))
-    return None
-
-  path_to_media_sling_content_directory = getPathToMediaContentDirectory(project_name)
-
-  logo_light_path = media_config["logoLight"].lstrip("/")
-  logo_light_path = os.path.join(path_to_media_sling_content_directory, logo_light_path)
-
-  if not os.path.exists(logo_light_path):
-    print("Warning: The path {} in {} does not exist.".format(logo_light_path, path_to_media_json))
-    return None
-
-  return logo_light_path
-
-def getCardsProjectLogoPath(project_name):
-  if project_name is not None:
-    # Try to see if a {project_id}-resources directory exists that can be used for obtaining the logo
-    projectLogoPath = getLogoByResourcesDirectory(project_name)
-    if projectLogoPath is not None:
-      return projectLogoPath
-
-  # If all else fails, use the default CARDS logo
-  projectLogoPath = "../modules/homepage/src/main/media/SLING-INF/content/libs/cards/resources/media/default/logo_light_bg.png"
-  return projectLogoPath
-
-def getApplicationNameByResourcesDirectory(project_name):
-  path_to_appname_json = os.path.join(getPathToConfDirectory(project_name), "AppName.json")
-  if not os.path.exists(path_to_appname_json):
-    print("Warning: {} does not exist.".format(path_to_appname_json))
-    return None
-
-  with open(path_to_appname_json, 'r') as f_json:
-    try:
-      appname_config = json.load(f_json)
-    except json.decoder.JSONDecodeError:
-      print("Warning: {} contains invalid JSON.".format(appname_config))
-      return None
-
-  if "AppName" not in appname_config:
-    print("Warning: 'AppName' was not specified in {}.".format(appname_config))
-    return None
-
-  if type(appname_config['AppName']) != str:
-    print("Warning: 'AppName' in {} is of wrong data-type.".format(path_to_appname_json))
-    return None
-
-  return appname_config['AppName']
-
-def getCardsApplicationName(project_name):
-  if project_name is not None:
-    # Try to see if a {project_id}-resources directory exists that can be used for obtaining the logo
-    projectAppName = getApplicationNameByResourcesDirectory(project_name)
-    if projectAppName is not None:
-      return projectAppName
-
-  # If all else fails, use the generic CARDS name
-  return "CARDS"
-
-def getWiredTigerCacheSizeGB(mongo_node_count=1):
-  total_system_memory_bytes = psutil.virtual_memory().total
-  total_system_memory_gb = total_system_memory_bytes / (1024 * 1024 * 1024)
-
-  # Total memory allocated for MongoDB - be it a single MongoDB container of a cluster of shards and replicas:
-  total_mongo_memory_gb = MEMORY_SPLIT_MONGO_DATA_STORAGE * total_system_memory_gb
-
-  # What should the WIRED_TIGER_CACHE_SIZE_GB value be for the MongoDB node in question?
-  wired_tiger_cache_size_gb = total_mongo_memory_gb / mongo_node_count
-
-  # Floor to 2 decimal places
-  wired_tiger_cache_size_gb = math.floor(100 * wired_tiger_cache_size_gb) / 100.0
-
-  # The value of WiredTigerCacheSizeGB must range between 0.25GB and 10000GB as per MongoDB documentation
-  if (wired_tiger_cache_size_gb < 0.25) or (wired_tiger_cache_size_gb > 10000):
-    raise Exception("WiredTigerCacheSizeGB cannot be less than 0.25 or greater than 10000")
-
-  return wired_tiger_cache_size_gb
-
-def getCardsJavaMemoryLimitMB():
-  total_system_memory_bytes = psutil.virtual_memory().total
-  total_system_memory_mb = total_system_memory_bytes / (1024 * 1024)
-
-  cards_java_memory_limit_mb = MEMORY_SPLIT_CARDS_JAVA * total_system_memory_mb
-
-  # Floor down to the nearest integer MB
-  return math.floor(cards_java_memory_limit_mb)
-
-def newListIfEmpty(yaml_object, *keys):
-  # Descend down the yaml_object through the keys
-  list_parent_object = yaml_object
-  for key in keys[0:-1]:
-    list_parent_object = list_parent_object[key]
-  list_name = keys[-1]
-  if list_name in list_parent_object.keys():
-    if type(list_parent_object[list_name]) is list:
-      return list_parent_object[list_name]
-  list_parent_object[list_name] = []
-  return list_parent_object[list_name]
+#### At this point we have completed validation and can start generating the Docker Compose environment
 
 OUTPUT_FILENAME = "docker-compose.yml"
 
@@ -446,7 +496,7 @@ yaml_obj['services'] = {}
 # We're using a cluster of MongoDB shards and replicas for data storage
 if args.mongo_cluster:
   #Create configuration databases
-  for i in range(CONFIGDB_REPLICA_COUNT):
+  for i in range(args.config_replicas):
     service_name = "config{}".format(i)
     print("Configuring service: {}".format(service_name))
     yaml_obj['services'][service_name] = {}
@@ -467,7 +517,7 @@ if args.mongo_cluster:
     yaml_obj['services'][service_name]['volumes'] = ["{}:/data/configdb".format(volume_name)]
 
   #Setup the Mongo shard/replica service containers
-  for shard_index in range(MONGO_SHARD_COUNT):
+  for shard_index in range(args.shards):
     os.mkdir("shard{}".format(shard_index))
     shutil.copyfile("TEMPLATE_shard/Dockerfile", "shard{}/Dockerfile".format(shard_index))
     mongo_conf = {}
@@ -484,7 +534,7 @@ if args.mongo_cluster:
     with open("shard{}/mongo-shard.conf".format(shard_index), 'w') as f_out:
       f_out.write(yaml.dump(mongo_conf, default_flow_style=False))
 
-    for replica_index in range(MONGO_REPLICA_COUNT):
+    for replica_index in range(args.replicas):
       service_name = "s{}r{}".format(shard_index, replica_index)
       print("Configuring service: {}".format(service_name))
       yaml_obj['services'][service_name] = {}
@@ -492,7 +542,7 @@ if args.mongo_cluster:
       yaml_obj['services'][service_name]['build'] = {}
       yaml_obj['services'][service_name]['build']['context'] = "shard{}".format(shard_index)
 
-      yaml_obj['services'][service_name]['environment'] = ["WIRED_TIGER_CACHE_SIZE_GB={}".format(getWiredTigerCacheSizeGB(MONGO_SHARD_COUNT * MONGO_REPLICA_COUNT))]
+      yaml_obj['services'][service_name]['environment'] = ["WIRED_TIGER_CACHE_SIZE_GB={}".format(getWiredTigerCacheSizeGB(args.shards * args.replicas))]
 
       yaml_obj['services'][service_name]['expose'] = ['27017']
 
@@ -519,16 +569,16 @@ if args.mongo_cluster:
   yaml_obj['services']['router']['networks']['internalnetwork']['aliases'] = ['router', 'mongo']
 
   yaml_obj['services']['router']['depends_on'] = []
-  for i in range(CONFIGDB_REPLICA_COUNT):
+  for i in range(args.config_replicas):
     yaml_obj['services']['router']['depends_on'].append("config{}".format(i))
 
-  for shard_index in range(MONGO_SHARD_COUNT):
-    for replica_index in range(MONGO_REPLICA_COUNT):
+  for shard_index in range(args.shards):
+    for replica_index in range(args.replicas):
       yaml_obj['services']['router']['depends_on'].append("s{}r{}".format(shard_index, replica_index))
 
   with open("mongos/mongo-router.conf", 'w') as f_out:
     configdb_str = "ConfigRS/"
-    for config_index in range(CONFIGDB_REPLICA_COUNT):
+    for config_index in range(args.config_replicas):
       configdb_str += "config{}:27017,".format(config_index)
     configdb_str = configdb_str.rstrip(',')
 
@@ -554,21 +604,21 @@ if args.mongo_cluster:
     config_init_doc['_id'] = "ConfigRS"
     config_init_doc['configsvr'] = True
     config_init_doc['members'] = []
-    for config_index in range(CONFIGDB_REPLICA_COUNT):
+    for config_index in range(args.config_replicas):
       config_init_doc['members'].append({'_id' : config_index, 'host' : 'config{}:27017'.format(config_index)})
 
     f_init.write("/mongo_rs_initiate.sh config0 '{}'\n".format(json.dumps(config_init_doc)))
     f_init.write('echo "ConfigDB replicas have been configured"\n')
 
     #Configure replica 0 for each shard
-    for shard_index in range(MONGO_SHARD_COUNT):
+    for shard_index in range(args.shards):
       f_init.write("/wait_for_mongo.sh s{}r0\n".format(shard_index))
       f_init.write('echo "Host s{}r0 is up"\n'.format(shard_index))
 
       shard_init_doc = {}
       shard_init_doc['_id'] = "MongoRS{}".format(shard_index)
       shard_init_doc['members'] = []
-      for replica_index in range(MONGO_REPLICA_COUNT):
+      for replica_index in range(args.replicas):
         shard_init_doc['members'].append({'_id' : replica_index, 'host' : "s{}r{}".format(shard_index, replica_index)})
 
       f_init.write("/mongo_rs_initiate.sh s{}r0 '{}'\n".format(shard_index, json.dumps(shard_init_doc)))
@@ -577,9 +627,9 @@ if args.mongo_cluster:
     f_init.write("/wait_for_mongo.sh router\n")
     f_init.write('echo "Host router is up"\n')
 
-    for shard_index in range(MONGO_SHARD_COUNT):
+    for shard_index in range(args.shards):
       shard_config = "MongoRS{}/".format(shard_index)
-      for replica_index in range(MONGO_REPLICA_COUNT):
+      for replica_index in range(args.replicas):
         shard_config += "s{}r{}:27017,".format(shard_index, replica_index)
       shard_config = shard_config.rstrip(',')
       f_init.write("/mongo_add_shard.sh router '{}'\n".format(shard_config))
@@ -651,7 +701,7 @@ if args.percona_singular:
 #Configure the initial CARDS container
 print("Configuring service: cardsinitial")
 yaml_obj['services']['cardsinitial'] = {}
-yaml_obj['services']['cardsinitial']['image'] = "cards/cards:{}".format(CARDS_DOCKER_TAG)
+yaml_obj['services']['cardsinitial']['image'] = args.cards_docker_image
 
 yaml_obj['services']['cardsinitial']['networks'] = {}
 yaml_obj['services']['cardsinitial']['networks']['internalnetwork'] = {}
@@ -660,7 +710,7 @@ yaml_obj['services']['cardsinitial']['networks']['internalnetwork']['aliases'] =
 #Create the ./SLING directory and copy the logback.xml file into it
 try:
   os.mkdir("SLING")
-  shutil.copyfile("../distribution/logback.xml", "SLING/logback.xml")
+  copyFileFromDockerImage(yaml_obj['services']['cardsinitial']['image'], "/opt/cards/.cards-data/logback.xml", "SLING/logback.xml")
 except FileExistsError:
   print("Warning: SLING directory exists - will leave unmodified.")
 
@@ -677,6 +727,8 @@ if os.path.exists("/etc/localtime"):
   yaml_obj['services']['cardsinitial']['volumes'].append("/etc/localtime:/etc/localtime:ro")
 if args.dev_docker_image:
   yaml_obj['services']['cardsinitial']['volumes'].append("{}:/root/.m2:ro".format(os.path.join(os.environ['HOME'], '.m2')))
+  if args.cards_generic_jars_repo:
+    yaml_obj['services']['cardsinitial']['volumes'].append("{}:/root/.cards-generic-m2:ro".format(args.cards_generic_jars_repo))
 
 if args.custom_env_file:
   yaml_obj['services']['cardsinitial']['env_file'] = args.custom_env_file
@@ -712,9 +764,6 @@ if args.sling_admin_port:
 
 if args.debug:
   newListIfEmpty(yaml_obj, 'services', 'cardsinitial', 'ports').append("127.0.0.1:5005:5005")
-
-if args.cards_project:
-  yaml_obj['services']['cardsinitial']['environment'].append("CARDS_PROJECT={}".format(args.cards_project))
 
 if args.composum:
   yaml_obj['services']['cardsinitial']['environment'].append("DEV=true")
@@ -762,7 +811,7 @@ if args.s3_test_container:
   yaml_obj['services']['cardsinitial']['environment'].append("AWS_KEY=minioadmin")
   yaml_obj['services']['cardsinitial']['environment'].append("AWS_SECRET=minioadmin")
 
-if SSL_PROXY or args.behind_ssl_termination:
+if args.ssl_proxy or args.behind_ssl_termination:
   yaml_obj['services']['cardsinitial']['environment'].append("BEHIND_SSL_PROXY=true")
 
 if args.slack_notifications:
@@ -778,7 +827,7 @@ if args.slack_notifications:
   if 'NIGHTLY_SLACK_NOTIFICATIONS_SCHEDULE' in os.environ:
     yaml_obj['services']['cardsinitial']['environment'].append("NIGHTLY_SLACK_NOTIFICATIONS_SCHEDULE={}".format(os.environ['NIGHTLY_SLACK_NOTIFICATIONS_SCHEDULE']))
 
-if ENABLE_BACKUP_SERVER:
+if args.enable_backup_server:
   print("Configuring service: backup_recorder")
 
   yaml_obj['services']['cardsinitial']['environment'].append("BACKUP_WEBHOOK_URL=http://backup_recorder:8012")
@@ -801,7 +850,7 @@ if ENABLE_BACKUP_SERVER:
   yaml_obj['services']['backup_recorder']['command'] = ["nodejs", "/backup_recorder.js", "/backup"]
 
 #Configure the NCR container (if enabled) - only one for now
-if ENABLE_NCR:
+if args.enable_ncr:
   print("Configuring service: neuralcr")
   yaml_obj['services']['neuralcr'] = {}
   yaml_obj['services']['neuralcr']['image'] = "ccmsk/neuralcr"
@@ -842,7 +891,7 @@ yaml_obj['services']['proxy'] = {}
 yaml_obj['services']['proxy']['build'] = {}
 yaml_obj['services']['proxy']['build']['context'] = "proxy"
 
-if SSL_PROXY:
+if args.ssl_proxy:
   if args.web_port_admin is not None:
     yaml_obj['services']['proxy']['ports'] = ["{}:443".format(args.web_port_admin)]
   else:
@@ -862,18 +911,17 @@ yaml_obj['services']['proxy']['networks']['internalnetwork'] = {}
 yaml_obj['services']['proxy']['networks']['internalnetwork']['aliases'] = ['proxy']
 
 yaml_obj['services']['proxy']['depends_on'] = ['cardsinitial']
-if ENABLE_NCR:
+if args.enable_ncr:
   yaml_obj['services']['proxy']['depends_on'].append('neuralcr')
 
 #Add the appropriate CARDS logo (eg. DATAPRO, HERACLES, etc...) for the selected project
-shutil.copyfile(getCardsProjectLogoPath(args.cards_project), "./proxy/proxyerror/logo.png")
+copyFileFromDockerImage(yaml_obj['services']['cardsinitial']['image'], "/metadata/logo.png", "./proxy/proxyerror/logo.png")
 
 #Specify the Application Name of the CARDS project to the proxy
 yaml_obj['services']['proxy']['environment'] = []
-yaml_obj['services']['proxy']['environment'].append("CARDS_APP_NAME={}".format(getCardsApplicationName(args.cards_project)))
 yaml_obj['services']['proxy']['environment'].append("WEB_PORT_USER_ROOT_REDIRECT={}".format(args.web_port_user_root_redirect))
 
-if SSL_PROXY:
+if args.ssl_proxy:
   if args.saml:
     shutil.copyfile("proxy/https_saml_000-default.conf", "proxy/000-default.conf")
   else:
@@ -987,12 +1035,6 @@ if args.mssql:
   yaml_obj['services']['cardsinitial']['environment'].append('CLARITY_SQL_PASSWORD=testPassword_')
   yaml_obj['services']['cardsinitial']['environment'].append('CLARITY_SQL_ENCRYPT=false')
   yaml_obj['services']['cardsinitial']['environment'].append('CLARITY_SQL_SCHEMA=path')
-  if args.cards_project == 'cards4prems':
-    yaml_obj['services']['cardsinitial']['environment'].append('CLARITY_SQL_TABLE=PatientActivity_data_for_PtExpSurveyApp')
-    yaml_obj['services']['cardsinitial']['environment'].append('CLARITY_EVENT_TIME_COLUMN=HOSP_DISCHARGE_DTTM')
-  elif args.cards_project == 'cards4proms':
-    yaml_obj['services']['cardsinitial']['environment'].append('CLARITY_SQL_TABLE=PatientVisitActivity_for_DATA-PRO')
-    yaml_obj['services']['cardsinitial']['environment'].append('CLARITY_EVENT_TIME_COLUMN=ENCOUNTER_DATE')
   if args.expose_mssql:
     yaml_obj['services']['mssql']['ports'] = ['127.0.0.1:{}:1433'.format(args.expose_mssql)]
 
@@ -1026,6 +1068,15 @@ for service_name in yaml_obj['services']:
   # Automatic restart policy
   if service_name not in ["initializer"]:
     yaml_obj['services'][service_name]['restart'] = "unless-stopped"
+
+# Add environment variable configurations specified by the CARDS Docker image
+cards_specified_env_conf = getEnvironmentVariablesMap(yaml_obj['services']['cardsinitial']['image'])
+for container in cards_specified_env_conf:
+  if 'environment' not in yaml_obj['services'][container]:
+    yaml_obj['services'][container]['environment'] = []
+
+  for env_entry in cards_specified_env_conf[container]:
+    yaml_obj['services'][container]['environment'].append(env_entry)
 
 #Save it
 with open(OUTPUT_FILENAME, 'w') as f_out:
