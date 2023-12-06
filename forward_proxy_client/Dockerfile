@@ -23,5 +23,5 @@ RUN apk add \
   websocat
 
 COPY docker_entry.sh /docker_entry.sh
-RUN chmod +x /docker_entry.sh 
+RUN chmod +x /docker_entry.sh
 ENTRYPOINT /docker_entry.sh
