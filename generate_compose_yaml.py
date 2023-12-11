@@ -151,6 +151,13 @@ argparser.add_argument('--server_address', help='Domain name (or Domain name:por
 
 # Direct access via localhost only
 argparser.add_argument('--sling_admin_port', help='The localhost TCP port which should be forwarded to cardsinitial:8080', type=int)
+
+# Ability to access internal services via forward-proxy
+argparser.add_argument('--forward_proxy', help='Add a TinyProxy forward-proxy for accessing the containers (eg. cards, minio, adminer, etc...) running in this cluster', action='store_true')
+argparser.add_argument('--forward_proxy_tcp_listen', help='Listen for incoming connections to TinyProxy on this TCP port', type=int)
+argparser.add_argument('--forward_proxy_websocket_tcp_listen', help='Listen for incoming connections to TinyProxy (over websocket) on this TCP port', type=int)
+argparser.add_argument('--forward_proxy_websocket_unix_listen', help='Listen for incoming connections to TinyProxy (over websocket) on this UNIX domain socket')
+
 ### --- END: Proxy configuration ---
 
 
@@ -963,6 +970,25 @@ if args.self_signed_ssl_proxy:
     f_proxy_ssl_cert.write(proxy_ssl_cert)
   with open("./SSL_CONFIG/certificatechain.crt", 'w') as f_proxy_ssl_cert:
     f_proxy_ssl_cert.write(proxy_ssl_cert)
+
+# Add a forward-proxy container, if specified
+if args.forward_proxy:
+  print("Configuring service: forward_proxy")
+  yaml_obj['services']['forward_proxy'] = {}
+  yaml_obj['services']['forward_proxy']['build'] = {}
+  yaml_obj['services']['forward_proxy']['build']['context'] = "forward_proxy"
+
+  if args.forward_proxy_tcp_listen:
+    newListIfEmpty(yaml_obj, 'services', 'forward_proxy', 'ports').append("{}:8888".format(args.forward_proxy_tcp_listen))
+  if args.forward_proxy_websocket_tcp_listen:
+    newListIfEmpty(yaml_obj, 'services', 'forward_proxy', 'ports').append("{}:8889".format(args.forward_proxy_websocket_tcp_listen))
+  if args.forward_proxy_websocket_unix_listen:
+    newListIfEmpty(yaml_obj, 'services', 'forward_proxy', 'volumes').append("{}:/unixwebsockets".format(os.path.dirname(args.forward_proxy_websocket_unix_listen)))
+    newListIfEmpty(yaml_obj, 'services', 'forward_proxy', 'environment').append("UNIX_WEBSOCKET_LISTEN=/unixwebsockets/{}".format(os.path.basename(args.forward_proxy_websocket_unix_listen)))
+
+  yaml_obj['services']['forward_proxy']['networks'] = {}
+  yaml_obj['services']['forward_proxy']['networks']['internalnetwork'] = {}
+  yaml_obj['services']['forward_proxy']['networks']['internalnetwork']['aliases'] = ['forward_proxy']
 
 #Configure the SMTPS localhost proxy container (if enabled)
 if args.smtps_localhost_proxy:
