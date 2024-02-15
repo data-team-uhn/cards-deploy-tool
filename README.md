@@ -15,7 +15,8 @@ python3 generate_compose_yaml.py --oak_filesystem --cards_docker_image ghcr.io/d
 docker-compose build
 docker-compose up -d
 # Stop the containers and cleanup:
-docker compose down
+docker-compose down
 docker-compose rm -vf
+docker volume prune -f
 ./cleanup.sh
 ```
