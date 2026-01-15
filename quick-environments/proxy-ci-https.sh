@@ -25,7 +25,7 @@ python3 generate_compose_yaml.py \
   --server_address localhost \
   --web_port_admin 443 \
   --web_port_user 444 \
-  --cards_project cards4prems \
+  --cards_docker_image cards:cards/latest \
   --ssl_proxy \
   --self_signed_ssl_proxy
 
