@@ -129,6 +129,9 @@ argparser.add_argument('--clarity', help='Enable the clarity-integration CARDS m
 # Enable sending notifications to Slack
 argparser.add_argument('--slack_notifications', help='Enable the periodic sending of performance metrics to a Slack channel', action='store_true')
 
+# Enable any other features
+argparser.add_argument('--additional_features', help='Enable additional CARDS features, e.g. mvn:io.uhndata.cards/cards-statistics/CARDS_VERSION/slingosgifeature', action='append')
+
 # Misc. CARDS configurations via environment variables
 argparser.add_argument('--custom_env_file', help='Enable a custom file with environment variables for the CARDS container')
 ### --- END: CARDS features/configurations ---
@@ -833,6 +836,9 @@ if args.slack_notifications:
   # If a NIGHTLY_SLACK_NOTIFICATIONS_SCHEDULE environment variable is set, pass it. Otherwise, CARDS will use its default value
   if 'NIGHTLY_SLACK_NOTIFICATIONS_SCHEDULE' in os.environ:
     yaml_obj['services']['cardsinitial']['environment'].append("NIGHTLY_SLACK_NOTIFICATIONS_SCHEDULE={}".format(os.environ['NIGHTLY_SLACK_NOTIFICATIONS_SCHEDULE']))
+
+if args.additional_features:
+  yaml_obj['services']['cardsinitial']['environment'].append("ADDITIONAL_SLING_FEATURES={}".format(",".join(args.additional_features)))
 
 if args.enable_backup_server:
   print("Configuring service: backup_recorder")
