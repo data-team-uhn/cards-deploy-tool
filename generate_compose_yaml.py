@@ -64,6 +64,12 @@ from ServerMemorySplitConfig import MEMORY_SPLIT_CARDS_JAVA, MEMORY_SPLIT_MONGO_
 
 ADMINER_DOCKER_RELEASE_TAG = "5.4.1"
 MINIO_DOCKER_RELEASE_TAG = "RELEASE.2022-09-17T00-09-45Z"
+POSTGRES_DOCKER_RELEASE_TAG = "17-bookworm"
+
+# The database, user and port of the PostgreSQL container provisioned by --postgres_singular
+LOCAL_POSTGRES_DB_NAME = "cards"
+LOCAL_POSTGRES_USER = "cards"
+LOCAL_POSTGRES_PORT = 5432
 
 argparser = argparse.ArgumentParser()
 
@@ -93,13 +99,22 @@ argparser.add_argument('--percona_encryption_vault_token_file')
 argparser.add_argument('--percona_encryption_vault_secret')
 argparser.add_argument('--percona_encryption_vault_disable_tls_for_testing', action='store_true')
 
+# Locally provisioned PostgreSQL data persistence configuration
+argparser.add_argument('--postgres_singular', help='Use a single PostgreSQL Docker container for data storage', action='store_true')
+argparser.add_argument('--postgres_password', help='If using --postgres_singular, authenticate to it with this password instead of trusting connections from the internal network')
+
 # Locally provisioned database data storage location
-argparser.add_argument('--data_db_mount', help='If using --mongo_singular or --percona_singular, mount /data/db to a given location instead of to a Docker volume')
+argparser.add_argument('--data_db_mount', help='If using --mongo_singular, --percona_singular or --postgres_singular, mount the database data directory to a given location instead of to a Docker volume')
 
 # Externally provisioned MongoDB URI
 argparser.add_argument('--external_mongo', help='Use an external MongoDB instance instead of providing our own', action='store_true')
 argparser.add_argument('--external_mongo_uri', help='URI of the external MongoDB instance. Only valid if --external_mongo is specified.')
 argparser.add_argument('--external_mongo_dbname', help='Database name of the external MongoDB instance. Only valid if --external_mongo is specified.')
+
+# Externally provisioned PostgreSQL URI
+argparser.add_argument('--external_postgres', help='Use an external PostgreSQL instance instead of providing our own', action='store_true')
+argparser.add_argument('--external_postgres_uri', help='URI of the external PostgreSQL instance, as a host name optionally followed by a port. Only valid if --external_postgres is specified.')
+argparser.add_argument('--external_postgres_dbname', help='Database name of the external PostgreSQL instance. Only valid if --external_postgres is specified.')
 
 # Data persistence provided by file system (not for production use)
 argparser.add_argument('--oak_filesystem', help='Use the filesystem (instead of MongoDB) as the back-end for Oak/JCR', action='store_true')
@@ -400,13 +415,22 @@ def getEnvironmentVariablesMap(docker_image_name):
 #### Validate the supplied configuration before attempting to build it
 
 # Ensure that we have some type of data storage for CARDS
-mongo_storage_type_settings = [args.mongo_singular, args.mongo_cluster, args.oak_filesystem, args.external_mongo, args.percona_singular]
-if mongo_storage_type_settings.count(True) < 1:
-  print("ERROR: A data persistence backend of either --mongo_singular, --mongo_cluster, --oak_filesystem, --external_mongo, or --percona_singular must be specified")
+storage_type_settings = [args.mongo_singular, args.mongo_cluster, args.oak_filesystem, args.external_mongo, args.percona_singular, args.postgres_singular, args.external_postgres]
+if storage_type_settings.count(True) < 1:
+  print("ERROR: A data persistence backend of either --mongo_singular, --mongo_cluster, --oak_filesystem, --external_mongo, --percona_singular, --postgres_singular, or --external_postgres must be specified")
   sys.exit(-1)
 
-if mongo_storage_type_settings.count(True) > 1:
+if storage_type_settings.count(True) > 1:
   print("ERROR: Only one data persistence backend can be specified")
+  sys.exit(-1)
+
+# The PostgreSQL options are only meaningful with their own storage backend
+if (args.postgres_password is not None) and (not args.postgres_singular):
+  print("ERROR: --postgres_password is only valid together with --postgres_singular")
+  sys.exit(-1)
+
+if ((args.external_postgres_uri is not None) or (args.external_postgres_dbname is not None)) and (not args.external_postgres):
+  print("ERROR: --external_postgres_uri and --external_postgres_dbname are only valid together with --external_postgres")
   sys.exit(-1)
 
 VAULT_PROVIDED_PERCONA_ENCRYPTION = False
@@ -708,6 +732,35 @@ if args.percona_singular:
   elif VAULT_PROVIDED_PERCONA_ENCRYPTION:
     yaml_obj['services']['percona']['volumes'].append("{}:/vault.token:ro".format(args.percona_encryption_vault_token_file))
 
+if args.postgres_singular:
+  # Create the single-container PostgreSQL
+  print("Configuring service: postgres")
+  yaml_obj['services']['postgres'] = {}
+  yaml_obj['services']['postgres']['image'] = "postgres:" + POSTGRES_DOCKER_RELEASE_TAG
+  yaml_obj['services']['postgres']['networks'] = {}
+  yaml_obj['services']['postgres']['networks']['internalnetwork'] = {}
+  yaml_obj['services']['postgres']['networks']['internalnetwork']['aliases'] = ['postgres']
+
+  yaml_obj['services']['postgres']['environment'] = []
+  yaml_obj['services']['postgres']['environment'].append("POSTGRES_DB={}".format(LOCAL_POSTGRES_DB_NAME))
+  yaml_obj['services']['postgres']['environment'].append("POSTGRES_USER={}".format(LOCAL_POSTGRES_USER))
+  if args.postgres_password is not None:
+    yaml_obj['services']['postgres']['environment'].append("POSTGRES_PASSWORD={}".format(args.postgres_password))
+  else:
+    # Like the mongo and percona containers, this database is reachable only from the internal
+    # network and is deployed without a password unless one is explicitly requested.
+    yaml_obj['services']['postgres']['environment'].append("POSTGRES_HOST_AUTH_METHOD=trust")
+
+  # Unlike mongo and percona, the PostgreSQL image stores its data one level below its mount
+  # point, so that the mounted directory may be non-empty at first start.
+  if args.data_db_mount is None:
+    yaml_obj['volumes']['cards-postgres'] = {}
+    yaml_obj['volumes']['cards-postgres']['driver'] = "local"
+
+    yaml_obj['services']['postgres']['volumes'] = ["cards-postgres:/var/lib/postgresql/data"]
+  else:
+    yaml_obj['services']['postgres']['volumes'] = ["{}:/var/lib/postgresql/data".format(args.data_db_mount)]
+
 #Configure the initial CARDS container
 print("Configuring service: cardsinitial")
 yaml_obj['services']['cardsinitial'] = {}
@@ -755,6 +808,15 @@ yaml_obj['services']['cardsinitial']['environment'].append("CARDS_RELOAD=${CARDS
 if args.oak_filesystem:
   yaml_obj['services']['cardsinitial']['environment'].append("OAK_FILESYSTEM=true")
 
+if args.postgres_singular or args.external_postgres:
+  yaml_obj['services']['cardsinitial']['environment'].append("OAK_STORAGE=rdb")
+
+if args.postgres_singular:
+  yaml_obj['services']['cardsinitial']['environment'].append("EXTERNAL_RDB_URI=jdbc:postgresql://postgres:{}/{}".format(LOCAL_POSTGRES_PORT, LOCAL_POSTGRES_DB_NAME))
+  yaml_obj['services']['cardsinitial']['environment'].append("RDB_USER={}".format(LOCAL_POSTGRES_USER))
+  if args.postgres_password is not None:
+    yaml_obj['services']['cardsinitial']['environment'].append("RDB_PASSWORD={}".format(args.postgres_password))
+
 if args.mongo_cluster:
   yaml_obj['services']['cardsinitial']['depends_on'] = ['router']
 
@@ -764,9 +826,12 @@ if args.mongo_singular:
 if args.percona_singular:
   yaml_obj['services']['cardsinitial']['depends_on'] = ['percona']
 
-if args.mongo_cluster or args.mongo_singular or args.percona_singular:
+if args.postgres_singular:
+  yaml_obj['services']['cardsinitial']['depends_on'] = ['postgres']
+
+if args.mongo_cluster or args.mongo_singular or args.percona_singular or args.postgres_singular:
   # We must also limit the memory given to the CARDS Java process as the
-  # internal MongoDB setup will also use a significant amount of memory.
+  # internal database will also use a significant amount of memory.
   yaml_obj['services']['cardsinitial']['environment'].append("CARDS_JAVA_MEMORY_LIMIT_MB={}".format(getCardsJavaMemoryLimitMB()))
 
 if args.sling_admin_port:
@@ -896,6 +961,38 @@ if args.external_mongo:
 
   if len(ext_mongo_db_name) != 0:
     yaml_obj['services']['cardsinitial']['environment'].append("CUSTOM_MONGO_DB_NAME={}".format(ext_mongo_db_name))
+
+if args.external_postgres:
+  if args.external_postgres_uri:
+    ext_postgres_uri = args.external_postgres_uri
+  else:
+    ext_postgres_uri = input("Enter the URI of the PostgreSQL server (ip, hostname, or domain name, optionally followed by port, e.g. postgres.localdomain:5432): ")
+
+  if args.external_postgres_uri and 'CARDS_EXT_RDB_AUTH' in os.environ:
+    ext_postgres_credentials = os.environ['CARDS_EXT_RDB_AUTH']
+  else:
+    ext_postgres_credentials = input("Enter the username:password for the PostgreSQL server (leave blank for no password): ")
+
+  if args.external_postgres_dbname:
+    ext_postgres_db_name = args.external_postgres_dbname
+  else:
+    ext_postgres_db_name = input("Enter the Sling storage database name on the PostgreSQL server (default: {}): ".format(LOCAL_POSTGRES_DB_NAME))
+
+  # Default the port and the database name so that the JDBC URL is always complete
+  if ':' not in ext_postgres_uri:
+    ext_postgres_uri = "{}:{}".format(ext_postgres_uri, LOCAL_POSTGRES_PORT)
+
+  if len(ext_postgres_db_name) == 0:
+    ext_postgres_db_name = LOCAL_POSTGRES_DB_NAME
+
+  yaml_obj['services']['cardsinitial']['environment'].append("EXTERNAL_RDB_URI=jdbc:postgresql://{}/{}".format(ext_postgres_uri, ext_postgres_db_name))
+
+  if len(ext_postgres_credentials) != 0:
+    # The username may not contain a colon, but the password may
+    ext_postgres_user, _colon, ext_postgres_password = ext_postgres_credentials.partition(':')
+    yaml_obj['services']['cardsinitial']['environment'].append("RDB_USER={}".format(ext_postgres_user))
+    if len(ext_postgres_password) != 0:
+      yaml_obj['services']['cardsinitial']['environment'].append("RDB_PASSWORD={}".format(ext_postgres_password))
 
 
 #Configure the proxy container
