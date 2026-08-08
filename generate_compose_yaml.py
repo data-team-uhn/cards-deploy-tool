@@ -64,7 +64,7 @@ from ServerMemorySplitConfig import MEMORY_SPLIT_CARDS_JAVA, MEMORY_SPLIT_MONGO_
 
 ADMINER_DOCKER_RELEASE_TAG = "5.4.1"
 MINIO_DOCKER_RELEASE_TAG = "RELEASE.2022-09-17T00-09-45Z"
-POSTGRES_DOCKER_RELEASE_TAG = "17-bookworm"
+POSTGRES_DOCKER_RELEASE_TAG = "18-bookworm"
 
 # The database, user and port of the PostgreSQL container provisioned by --postgres_singular
 LOCAL_POSTGRES_DB_NAME = "cards"
@@ -744,6 +744,9 @@ if args.postgres_singular:
   yaml_obj['services']['postgres']['environment'] = []
   yaml_obj['services']['postgres']['environment'].append("POSTGRES_DB={}".format(LOCAL_POSTGRES_DB_NAME))
   yaml_obj['services']['postgres']['environment'].append("POSTGRES_USER={}".format(LOCAL_POSTGRES_USER))
+  # Oak's RDBDocumentStore needs C collation.
+  # See https://jackrabbit.apache.org/oak/docs/nodestore/document/rdb-document-store.html#postgresql
+  yaml_obj['services']['postgres']['environment'].append("POSTGRES_INITDB_ARGS=--encoding=UTF8 --lc-collate=C --lc-ctype=C")
   if args.postgres_password is not None:
     yaml_obj['services']['postgres']['environment'].append("POSTGRES_PASSWORD={}".format(args.postgres_password))
   else:
@@ -751,15 +754,13 @@ if args.postgres_singular:
     # network and is deployed without a password unless one is explicitly requested.
     yaml_obj['services']['postgres']['environment'].append("POSTGRES_HOST_AUTH_METHOD=trust")
 
-  # Unlike mongo and percona, the PostgreSQL image stores its data one level below its mount
-  # point, so that the mounted directory may be non-empty at first start.
   if args.data_db_mount is None:
     yaml_obj['volumes']['cards-postgres'] = {}
     yaml_obj['volumes']['cards-postgres']['driver'] = "local"
 
-    yaml_obj['services']['postgres']['volumes'] = ["cards-postgres:/var/lib/postgresql/data"]
+    yaml_obj['services']['postgres']['volumes'] = ["cards-postgres:/var/lib/postgresql"]
   else:
-    yaml_obj['services']['postgres']['volumes'] = ["{}:/var/lib/postgresql/data".format(args.data_db_mount)]
+    yaml_obj['services']['postgres']['volumes'] = ["{}:/var/lib/postgresql".format(args.data_db_mount)]
 
 #Configure the initial CARDS container
 print("Configuring service: cardsinitial")
