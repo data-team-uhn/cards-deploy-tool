@@ -11,6 +11,8 @@ containers as a Docker Compose environment.
 python3 generate_compose_yaml.py --help
 # For a standalone cards4sparc instance using the latest published version, run:
 python3 generate_compose_yaml.py --oak_filesystem --cards_docker_image ghcr.io/data-team-uhn/cards4sparc
+# To store the repository in a PostgreSQL container instead of on the filesystem, run:
+python3 generate_compose_yaml.py --postgres_singular --cards_docker_image ghcr.io/data-team-uhn/cards4sparc
 # Start the containers:
 docker-compose build
 docker-compose up -d

@@ -1,0 +1,184 @@
+[
+  {
+    "name": "Generate a Docker Compose Environment backed by a local PostgreSQL container",
+    "exec": {
+      "type": "shell",
+      "code": "python3 generate_compose_yaml.py --cards_docker_image cards/cards:latest --dev_docker_image --postgres_singular"
+    }
+  },
+  {
+    "name": "Checking that the postgres container is deployed alongside cardsinitial and the proxy",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services"],
+      "comparator": "keysetEquals",
+      "expectedValue": ["cardsinitial", "proxy", "postgres"]
+    }
+  },
+  {
+    "name": "Checking the postgres container image",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services", "postgres", "image"],
+      "comparator": "==",
+      "expectedValue": "postgres:18-bookworm"
+    }
+  },
+  {
+    "name": "Checking that the postgres container provisions the cards database",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services", "postgres", "environment"],
+      "comparator": "contains",
+      "expectedValue": "POSTGRES_DB=cards"
+    }
+  },
+  {
+    "name": "Checking that the postgres container provisions the cards user",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services", "postgres", "environment"],
+      "comparator": "contains",
+      "expectedValue": "POSTGRES_USER=cards"
+    }
+  },
+  {
+    "name": "Checking that the postgres container trusts the internal network when no password is given",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services", "postgres", "environment"],
+      "comparator": "contains",
+      "expectedValue": "POSTGRES_HOST_AUTH_METHOD=trust"
+    }
+  },
+  {
+    "name": "Checking that the postgres container is initialized with C collation (required by Oak)",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services", "postgres", "environment"],
+      "comparator": "contains",
+      "expectedValue": "POSTGRES_INITDB_ARGS=--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    }
+  },
+  {
+    "name": "Checking that the postgres data directory is persisted to a Docker volume",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services", "postgres", "volumes"],
+      "comparator": "contains",
+      "expectedValue": "cards-postgres:/var/lib/postgresql"
+    }
+  },
+  {
+    "name": "Checking that the cards-postgres volume is declared",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["volumes", "cards-postgres"],
+      "comparator": "exists"
+    }
+  },
+  {
+    "name": "Checking that CARDS selects the relational storage backend",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services", "cardsinitial", "environment"],
+      "comparator": "contains",
+      "expectedValue": "OAK_STORAGE=rdb"
+    }
+  },
+  {
+    "name": "Checking that CARDS points at the postgres container",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services", "cardsinitial", "environment"],
+      "comparator": "contains",
+      "expectedValue": "EXTERNAL_RDB_URI=jdbc:postgresql://postgres:5432/cards"
+    }
+  },
+  {
+    "name": "Checking that CARDS authenticates to postgres as the cards user",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services", "cardsinitial", "environment"],
+      "comparator": "contains",
+      "expectedValue": "RDB_USER=cards"
+    }
+  },
+  {
+    "name": "Checking that the filesystem storage backend is not also selected",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services", "cardsinitial", "environment"],
+      "comparator": "containsNot",
+      "expectedValue": "OAK_FILESYSTEM=true"
+    }
+  },
+  {
+    "name": "Checking that CARDS waits for the postgres container",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services", "cardsinitial", "depends_on"],
+      "comparator": "contains",
+      "expectedValue": "postgres"
+    }
+  },
+  {
+    "name": "Generate a Docker Compose Environment backed by an external PostgreSQL server",
+    "exec": {
+      "type": "shell",
+      "code": "CARDS_EXT_RDB_AUTH='produser:prodpassword' python3 generate_compose_yaml.py --cards_docker_image cards/cards:latest --dev_docker_image --external_postgres --external_postgres_uri db.example.com:5433 --external_postgres_dbname cardsprod"
+    }
+  },
+  {
+    "name": "Checking that no postgres container is deployed for an external database",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services"],
+      "comparator": "keysetEquals",
+      "expectedValue": ["cardsinitial", "proxy"]
+    }
+  },
+  {
+    "name": "Checking that CARDS selects the relational storage backend for an external database",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services", "cardsinitial", "environment"],
+      "comparator": "contains",
+      "expectedValue": "OAK_STORAGE=rdb"
+    }
+  },
+  {
+    "name": "Checking that the external JDBC URL is built from the given host, port and database",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services", "cardsinitial", "environment"],
+      "comparator": "contains",
+      "expectedValue": "EXTERNAL_RDB_URI=jdbc:postgresql://db.example.com:5433/cardsprod"
+    }
+  },
+  {
+    "name": "Checking that the external database username is passed to CARDS",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services", "cardsinitial", "environment"],
+      "comparator": "contains",
+      "expectedValue": "RDB_USER=produser"
+    }
+  },
+  {
+    "name": "Checking that the external database password is passed to CARDS",
+    "exec": {
+      "type": "checkDockerComposeYAML",
+      "yamlPath": ["services", "cardsinitial", "environment"],
+      "comparator": "contains",
+      "expectedValue": "RDB_PASSWORD=prodpassword"
+    }
+  },
+  {
+    "name": "Clean up",
+    "exec": {
+      "type": "shell",
+      "code": "./cleanup.sh"
+    }
+  }
+]
